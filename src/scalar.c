@@ -628,6 +628,11 @@ static void scalar_create(fuse_req_t req, fuse_ino_t parent, const char *name, m
     int err;
     if (scalar_debug(req))
         fprintf(stderr, "scalar_create(parent=%" PRIu64 ", name=%s)\n", parent, name);
+
+    // Test for file existence (to log only creates)
+    int not_exists = faccessat(scalar_fd(req, parent), name, F_OK, AT_EACCESS | AT_SYMLINK_NOFOLLOW);
+
+    // Open/create file
     fd = openat(scalar_fd(req, parent), name, (fi->flags | O_CREAT) & ~O_NOFOLLOW, mode);
     if (fd == -1)
         return (void) fuse_reply_err(req, errno);
@@ -637,10 +642,17 @@ static void scalar_create(fuse_req_t req, fuse_ino_t parent, const char *name, m
     else if (scalar->cache == CACHE_ALWAYS)
         fi->keep_cache = 1;
     err = scalar_do_lookup(req, parent, name, &e);
+
     if (err)
         fuse_reply_err(req, err);
-    else
+    else {
+        // Log file creation
+        if(not_exists)
+            log_create(parent, name, e.ino);
+
+        // Reply
         fuse_reply_create(req, &e, fi);
+    }
 }
 
 // Synchronize directory contents

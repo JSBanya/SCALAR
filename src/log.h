@@ -11,5 +11,6 @@
 
 void print_hex(const char *string);
 void log_write_buf(fuse_ino_t ino, struct fuse_bufvec *in_buf, off_t off);
+void log_create(fuse_ino_t parent, const char *name, fuse_ino_t ino);
 
 #endif
