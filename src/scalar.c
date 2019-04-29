@@ -1,98 +1,5 @@
-#define _GNU_SOURCE
-#define FUSE_USE_VERSION 31
-#include <fuse_lowlevel.h>
-#include <unistd.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <stddef.h>
-#include <stdbool.h>
-#include <string.h>
-#include <limits.h>
-#include <dirent.h>
-#include <assert.h>
-#include <errno.h>
-#include <err.h>
-#include <inttypes.h>
-#include <pthread.h>
-#include <sys/file.h>
-#include <sys/xattr.h>
+#include "scalar.h"
 #include "log.h"
-
-/* We are re-using pointers to our `struct scalar_inode` and `struct
-   scalar_dirp` elements as inodes. This means that we must be able to
-   store uintptr_t values in a fuse_ino_t variable. The following
-   incantation checks this condition at compile time. */
-#if defined(__GNUC__) && (__GNUC__ > 4 || __GNUC__ == 4 && __GNUC_MINOR__ >= 6) && !defined __cplusplus
-_Static_assert(sizeof(fuse_ino_t) >= sizeof(uintptr_t), "fuse_ino_t too small to hold uintptr_t values!");
-#else
-struct _uintptr_to_must_hold_fuse_ino_t_dummy_struct \
-        { unsigned _uintptr_to_must_hold_fuse_ino_t: ((sizeof(fuse_ino_t) >= sizeof(uintptr_t)) ? 1 : -1); };
-#endif
-
-
-struct scalar_inode {
-    struct scalar_inode *next; /* protected by scalar->mutex */
-    struct scalar_inode *prev; /* protected by scalar->mutex */
-    int fd;
-    bool is_symlink;
-    ino_t ino;
-    dev_t dev;
-    uint64_t refcount; /* protected by scalar->mutex */
-};
-
-enum {
-    CACHE_NEVER,
-    CACHE_NORMAL,
-    CACHE_ALWAYS,
-};
-
-struct scalar_data {
-    pthread_mutex_t mutex;
-    int debug;
-    int writeback;
-    int flock;
-    int xattr;
-    const char *source;
-    double timeout;
-    int cache;
-    int timeout_set;
-    struct scalar_inode root; /* protected by scalar->mutex */
-};
-
-static const struct fuse_opt scalar_opts[] = {
-    { "writeback",
-      offsetof(struct scalar_data, writeback), 1 },
-    { "no_writeback",
-      offsetof(struct scalar_data, writeback), 0 },
-    { "source=%s",
-      offsetof(struct scalar_data, source), 0 },
-    { "flock",
-      offsetof(struct scalar_data, flock), 1 },
-    { "no_flock",
-      offsetof(struct scalar_data, flock), 0 },
-    { "xattr",
-      offsetof(struct scalar_data, xattr), 1 },
-    { "no_xattr",
-      offsetof(struct scalar_data, xattr), 0 },
-    { "timeout=%lf",
-      offsetof(struct scalar_data, timeout), 0 },
-    { "timeout=",
-      offsetof(struct scalar_data, timeout_set), 1 },
-    { "cache=never",
-      offsetof(struct scalar_data, cache), CACHE_NEVER },
-    { "cache=auto",
-      offsetof(struct scalar_data, cache), CACHE_NORMAL },
-    { "cache=always",
-      offsetof(struct scalar_data, cache), CACHE_ALWAYS },
-    FUSE_OPT_END
-};
-
-struct scalar_dirp {
-    int fd;
-    DIR *dp;
-    struct dirent *entry;
-    off_t offset;
-};
 
 static struct scalar_dirp *scalar_dirp(struct fuse_file_info *fi) {
     return (struct scalar_dirp *) (uintptr_t) fi->fh;
@@ -106,9 +13,9 @@ static struct scalar_data *scalar_data(fuse_req_t req) {
 // Get inode struct from fuse inode
 static struct scalar_inode *scalar_inode(fuse_req_t req, fuse_ino_t ino) {
     if (ino == FUSE_ROOT_ID)
-            return &scalar_data(req)->root;
+        return &scalar_data(req)->root;
     else
-            return (struct scalar_inode *) (uintptr_t) ino;
+        return (struct scalar_inode *) (uintptr_t) ino;
 }
 
 // Get file descriptor for inode
@@ -126,16 +33,16 @@ static bool scalar_debug(fuse_req_t req) {
 static void scalar_init(void *userdata, struct fuse_conn_info *conn) {
     struct scalar_data *scalar = (struct scalar_data*) userdata;
     if(conn->capable & FUSE_CAP_EXPORT_SUPPORT)
-            conn->want |= FUSE_CAP_EXPORT_SUPPORT;
+        conn->want |= FUSE_CAP_EXPORT_SUPPORT;
     if (scalar->writeback && conn->capable & FUSE_CAP_WRITEBACK_CACHE) {
-            if (scalar->debug)
-                    fprintf(stderr, "scalar_init: activating writeback\n");
-            conn->want |= FUSE_CAP_WRITEBACK_CACHE;
+        if (scalar->debug)
+            fprintf(stderr, "scalar_init: activating writeback\n");
+        conn->want |= FUSE_CAP_WRITEBACK_CACHE;
     }
     if (scalar->flock && conn->capable & FUSE_CAP_FLOCK_LOCKS) {
-            if (scalar->debug)
-                    fprintf(stderr, "scalar_init: activating flock locks\n");
-            conn->want |= FUSE_CAP_FLOCK_LOCKS;
+        if (scalar->debug)
+            fprintf(stderr, "scalar_init: activating flock locks\n");
+        conn->want |= FUSE_CAP_FLOCK_LOCKS;
     }
 }
 
@@ -146,7 +53,7 @@ static void scalar_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info
     struct stat buf;
     int res = fstatat(scalar_fd(req, ino), "", &buf, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW);
     if (res == -1)
-            return (void) fuse_reply_err(req, errno);
+        return (void) fuse_reply_err(req, errno);
     fuse_reply_attr(req, &buf, scalar->timeout);
 }
 
@@ -154,11 +61,11 @@ static int utimensat_empty_nofollow(struct scalar_inode *inode, const struct tim
     int res;
     char procname[64];
     if (inode->is_symlink) {
-            res = utimensat(inode->fd, "", tv, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW);
-            if (res == -1 && errno == EINVAL) {
-                errno = EPERM;
-            }
-            return res;
+        res = utimensat(inode->fd, "", tv, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW);
+        if (res == -1 && errno == EINVAL) {
+            errno = EPERM;
+        }
+        return res;
     }
     sprintf(procname, "/proc/self/fd/%i", inode->fd);
     return utimensat(AT_FDCWD, procname, tv, 0);
@@ -173,30 +80,30 @@ static void scalar_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr, in
     int res;
     if (to_set & FUSE_SET_ATTR_MODE) {
             if (fi) {
-                    res = fchmod(fi->fh, attr->st_mode);
+                res = fchmod(fi->fh, attr->st_mode);
             } else {
-                    sprintf(procname, "/proc/self/fd/%i", ifd);
-                    res = chmod(procname, attr->st_mode);
+                sprintf(procname, "/proc/self/fd/%i", ifd);
+                res = chmod(procname, attr->st_mode);
             }
             if (res == -1)
-                    goto out_err;
+                goto out_err;
     }
     if (to_set & (FUSE_SET_ATTR_UID | FUSE_SET_ATTR_GID)) {
             uid_t uid = (to_set & FUSE_SET_ATTR_UID) ? attr->st_uid : (uid_t) -1;
             gid_t gid = (to_set & FUSE_SET_ATTR_GID) ? attr->st_gid : (gid_t) -1;
             res = fchownat(ifd, "", uid, gid, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW);
             if (res == -1)
-                    goto out_err;
+                goto out_err;
     }
     if (to_set & FUSE_SET_ATTR_SIZE) {
             if (fi) {
-                    res = ftruncate(fi->fh, attr->st_size);
+                res = ftruncate(fi->fh, attr->st_size);
             } else {
-                    sprintf(procname, "/proc/self/fd/%i", ifd);
-                    res = truncate(procname, attr->st_size);
+                sprintf(procname, "/proc/self/fd/%i", ifd);
+                res = truncate(procname, attr->st_size);
             }
             if (res == -1)
-                    goto out_err;
+                goto out_err;
     }
     if (to_set & (FUSE_SET_ATTR_ATIME | FUSE_SET_ATTR_MTIME)) {
             struct timespec tv[2];
@@ -205,19 +112,19 @@ static void scalar_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr, in
             tv[0].tv_nsec = UTIME_OMIT;
             tv[1].tv_nsec = UTIME_OMIT;
             if (to_set & FUSE_SET_ATTR_ATIME_NOW)
-                    tv[0].tv_nsec = UTIME_NOW;
+                tv[0].tv_nsec = UTIME_NOW;
             else if (to_set & FUSE_SET_ATTR_ATIME)
-                    tv[0] = attr->st_atim;
+                tv[0] = attr->st_atim;
             if (to_set & FUSE_SET_ATTR_MTIME_NOW)
-                    tv[1].tv_nsec = UTIME_NOW;
+                tv[1].tv_nsec = UTIME_NOW;
             else if (to_set & FUSE_SET_ATTR_MTIME)
-                    tv[1] = attr->st_mtim;
+                tv[1] = attr->st_mtim;
             if (fi)
-                    res = futimens(fi->fh, tv);
+                res = futimens(fi->fh, tv);
             else
-                    res = utimensat_empty_nofollow(inode, tv);
+                res = utimensat_empty_nofollow(inode, tv);
             if (res == -1)
-                    goto out_err;
+                goto out_err;
     }
     return scalar_getattr(req, ino, fi);
 out_err:
@@ -231,12 +138,12 @@ static struct scalar_inode *scalar_find(struct scalar_data *scalar, struct stat 
     struct scalar_inode *ret = NULL;
     pthread_mutex_lock(&scalar->mutex);
     for (p = scalar->root.next; p != &scalar->root; p = p->next) {
-            if (p->ino == st->st_ino && p->dev == st->st_dev) {
-                    assert(p->refcount > 0);
-                    ret = p;
-                    ret->refcount++;
-                    break;
-            }
+        if (p->ino == st->st_ino && p->dev == st->st_dev) {
+            assert(p->refcount > 0);
+            ret = p;
+            ret->refcount++;
+            break;
+        }
     }
     pthread_mutex_unlock(&scalar->mutex);
     return ret;
@@ -255,35 +162,35 @@ static int scalar_do_lookup(fuse_req_t req, fuse_ino_t parent, const char *name,
     e->entry_timeout = scalar->timeout;
     newfd = openat(scalar_fd(req, parent), name, O_PATH | O_NOFOLLOW); // Get file descriptor for file name
     if (newfd == -1)
-            goto out_err;
+        goto out_err;
     res = fstatat(newfd, "", &e->attr, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW); // Get attributes for opened file
     if (res == -1)
-            goto out_err;
+        goto out_err;
     inode = scalar_find(scalar_data(req), &e->attr); // Find if inode exists in linked list
     if (inode) {
-            // Inode already exists in the linked list
-            close(newfd);
-            newfd = -1;
+        // Inode already exists in the linked list
+        close(newfd);
+        newfd = -1;
     } else {
-            // Create new inode entry from file attributes
-            struct scalar_inode *prev, *next;
-            saverr = ENOMEM;
-            inode = calloc(1, sizeof(struct scalar_inode));
-            if (!inode)
-                    goto out_err;
-            inode->is_symlink = S_ISLNK(e->attr.st_mode);
-            inode->refcount = 1;
-            inode->fd = newfd;
-            inode->ino = e->attr.st_ino;
-            inode->dev = e->attr.st_dev;
-            pthread_mutex_lock(&scalar->mutex);
-            prev = &scalar->root;
-            next = prev->next;
-            next->prev = inode;
-            inode->next = next;
-            inode->prev = prev;
-            prev->next = inode;
-            pthread_mutex_unlock(&scalar->mutex);
+        // Create new inode entry from file attributes
+        struct scalar_inode *prev, *next;
+        saverr = ENOMEM;
+        inode = calloc(1, sizeof(struct scalar_inode));
+        if (!inode)
+            goto out_err;
+        inode->is_symlink = S_ISLNK(e->attr.st_mode);
+        inode->refcount = 1;
+        inode->fd = newfd;
+        inode->ino = e->attr.st_ino;
+        inode->dev = e->attr.st_dev;
+        pthread_mutex_lock(&scalar->mutex);
+        prev = &scalar->root;
+        next = prev->next;
+        next->prev = inode;
+        inode->next = next;
+        inode->prev = prev;
+        prev->next = inode;
+        pthread_mutex_unlock(&scalar->mutex);
     }
     e->ino = (uintptr_t) inode;
     if (scalar_debug(req))
@@ -318,23 +225,23 @@ static void scalar_mknod_symlink(fuse_req_t req, fuse_ino_t parent, const char *
     struct fuse_entry_param e;
     saverr = ENOMEM;
     if (S_ISDIR(mode))
-            res = mkdirat(dir->fd, name, mode);
+        res = mkdirat(dir->fd, name, mode);
     else if (S_ISLNK(mode))
-            res = symlinkat(link, dir->fd, name);
+        res = symlinkat(link, dir->fd, name);
     else
-            res = mknodat(dir->fd, name, mode, rdev);
+        res = mknodat(dir->fd, name, mode, rdev);
     saverr = errno;
     if (res == -1)
-            goto out;
+        goto out;
     saverr = scalar_do_lookup(req, parent, name, &e);
     if (saverr)
-            goto out;
+        goto out;
     if (scalar_debug(req)) fprintf(stderr, "  %lli/%s -> %lli\n", (unsigned long long) parent, name, (unsigned long long) e.ino);
     fuse_reply_entry(req, &e);
     return;
 out:
     if (newfd != -1)
-            close(newfd);
+        close(newfd);
     fuse_reply_err(req, saverr);
 }
 
@@ -359,11 +266,11 @@ static int linkat_empty_nofollow(struct scalar_inode *inode, int dfd, const char
     int res;
     char procname[64];
     if (inode->is_symlink) {
-            res = linkat(inode->fd, "", dfd, name, AT_EMPTY_PATH);
-            if (res == -1 && (errno == ENOENT || errno == EINVAL)) {
-                errno = EPERM;
-            }
-            return res;
+        res = linkat(inode->fd, "", dfd, name, AT_EMPTY_PATH);
+        if (res == -1 && (errno == ENOENT || errno == EINVAL)) {
+            errno = EPERM;
+        }
+        return res;
     }
     sprintf(procname, "/proc/self/fd/%i", inode->fd);
     return linkat(AT_FDCWD, procname, dfd, name, AT_SYMLINK_FOLLOW);
@@ -381,10 +288,10 @@ static void scalar_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t parent, const
     e.entry_timeout = scalar->timeout;
     res = linkat_empty_nofollow(inode, scalar_fd(req, parent), name); // Create the hardlink
     if (res == -1)
-            goto out_err;
+        goto out_err;
     res = fstatat(inode->fd, "", &e.attr, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW); // Get attributes
     if (res == -1)
-            goto out_err;
+        goto out_err;
     pthread_mutex_lock(&scalar->mutex);
     inode->refcount++;
     pthread_mutex_unlock(&scalar->mutex);
@@ -409,8 +316,23 @@ static void scalar_rename(fuse_req_t req, fuse_ino_t parent, const char *name, f
         fuse_reply_err(req, EINVAL);
         return;
     }
+
+    // Lookup file to get inode for logging
+    struct fuse_entry_param e;
+    int err = scalar_do_lookup(req, parent, name, &e);
+    if (err)
+        fuse_reply_err(req, err);
+    scalar_forget_one(req, e.ino, 1);
+
+    // Rename
     int res = renameat(scalar_fd(req, parent), name, scalar_fd(req, newparent), newname);
-    fuse_reply_err(req, res == -1 ? errno : 0);
+    if(res != -1) {
+        // Log only if success
+        log_rename(parent, name, newparent, newname, e.ino);
+        fuse_reply_err(req, 0);
+    } else {
+        fuse_reply_err(req, errno);
+    }
 }
 
 // Remove a file
@@ -529,9 +451,9 @@ static void scalar_do_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t
     }
     p = buf;
     if (offset != d->offset) {
-            seekdir(d->dp, offset);
-            d->entry = NULL;
-            d->offset = offset;
+        seekdir(d->dp, offset);
+        d->entry = NULL;
+        d->offset = offset;
     }
     while (1) {
         size_t entsize;
@@ -933,42 +855,6 @@ static void scalar_removexattr(fuse_req_t req, fuse_ino_t ino, const char *name)
 out:
     fuse_reply_err(req, saverr);
 }
-
-static struct fuse_lowlevel_ops scalar_oper = {
-        .init           = scalar_init,
-        .lookup         = scalar_lookup,
-        .mkdir          = scalar_mkdir,
-        .mknod          = scalar_mknod,
-        .symlink        = scalar_symlink,
-        .link           = scalar_link,
-        .unlink         = scalar_unlink,
-        .rmdir          = scalar_rmdir,
-        .rename         = scalar_rename,
-        .forget         = scalar_forget,
-        .forget_multi   = scalar_forget_multi,
-        .getattr        = scalar_getattr,
-        .setattr        = scalar_setattr,
-        .readlink       = scalar_readlink,
-        .opendir        = scalar_opendir,
-        .readdir        = scalar_readdir,
-        .readdirplus    = scalar_readdirplus,
-        .releasedir     = scalar_releasedir,
-        .fsyncdir       = scalar_fsyncdir,
-        .create         = scalar_create,
-        .open           = scalar_open,
-        .release        = scalar_release,
-        .flush          = scalar_flush,
-        .fsync          = scalar_fsync,
-        .read           = scalar_read,
-        .write_buf      = scalar_write_buf,
-        .statfs         = scalar_statfs,
-        .fallocate      = scalar_fallocate,
-        .flock          = scalar_flock,
-        .getxattr       = scalar_getxattr,
-        .listxattr      = scalar_listxattr,
-        .setxattr       = scalar_setxattr,
-        .removexattr    = scalar_removexattr,
-};
 
 int main(int argc, char *argv[]) {
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);

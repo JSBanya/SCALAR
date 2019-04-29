@@ -13,7 +13,7 @@ void log_write_buf(fuse_ino_t ino, struct fuse_bufvec *in_buf, off_t off) {
     char *content = (char*) malloc(content_size+1);
     memcpy(content, in_buf->buf[0].mem, content_size);
     content[content_size] = '\0';
-    printf("WRITE || ino=%" PRIu64 ", size=%d, pos=%lu -> %s\n", ino, content_size, (unsigned long) off, content);
+    printf("WRITE || ino=%" PRIu64 ", size=%d, pos=%lu, content=%s\n", ino, content_size, (unsigned long) off, content);
     free(content);
     content = 0;
     in_buf->buf[0].pos = off;
@@ -21,5 +21,9 @@ void log_write_buf(fuse_ino_t ino, struct fuse_bufvec *in_buf, off_t off) {
 
 void log_create(fuse_ino_t parent, const char *name, fuse_ino_t ino) {
 	printf("CREATE || parent_ino=%" PRIu64 ", name=%s, ino=%" PRIu64 "\n", parent, name, ino);
+}
+
+void log_rename(fuse_ino_t parent, const char *name, fuse_ino_t newparent, const char *newname, fuse_ino_t ino) {
+	printf("RENAME || parent_ino=%" PRIu64 ", new_parent_ino=%" PRIu64 ", ino=%" PRIu64 ", rename=%s -> %s\n", parent, newparent, ino, name, newname);
 }
 
