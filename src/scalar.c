@@ -16,6 +16,7 @@
 #include <pthread.h>
 #include <sys/file.h>
 #include <sys/xattr.h>
+#include "log.h"
 
 /* We are re-using pointers to our `struct scalar_inode` and `struct
    scalar_dirp` elements as inodes. This means that we must be able to
@@ -745,14 +746,7 @@ static void scalar_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec 
         fprintf(stderr, "scalar_write(ino=%" PRIu64 ", size=%zd, off=%lu)\n", ino, out_buf.buf[0].size, (unsigned long) off);
 
     // Log write
-    int content_size = fuse_buf_size(in_buf);
-    char *content = (char*) malloc(content_size+1);
-    memcpy(content, in_buf->buf[0].mem, content_size);
-    content[content_size] = '\0';
-    printf("ino=%" PRIu64 ", size=%d, pos=%lu | %s\n", ino, content_size, (unsigned long) off, content);
-    free(content);
-    content = 0;
-    in_buf->buf[0].pos = off;
+    log_write_buf(ino, in_buf, off);
 
     res = fuse_buf_copy(&out_buf, in_buf, 0);
     if(res < 0)
@@ -1050,6 +1044,7 @@ int main(int argc, char *argv[]) {
 
     fuse_daemonize(opts.foreground);
 
+    printf("SCALAR started\n");
     if (opts.singlethread)
         ret = fuse_session_loop(se);
     else
