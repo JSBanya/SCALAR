@@ -27,3 +27,22 @@ void log_rename(fuse_ino_t parent, const char *name, fuse_ino_t newparent, const
 	printf("RENAME || parent_ino=%" PRIu64 ", new_parent_ino=%" PRIu64 ", ino=%" PRIu64 ", rename=%s -> %s\n", parent, newparent, ino, name, newname);
 }
 
+void log_unlink(fuse_ino_t parent, const char *name) {
+	printf("UNLINK || parent_ino=%" PRIu64 ", name=%s\n", parent, name);	
+}
+
+void log_rmdir(fuse_ino_t parent, const char *name) {
+	printf("RMDIR || parent_ino=%" PRIu64 ", name=%s\n", parent, name);	
+}
+
+void log_mkdir(fuse_ino_t parent, const char *name, fuse_ino_t ino) {
+	printf("MKDIR || parent_ino=%" PRIu64 ", name=%s, ino=%" PRIu64 "\n", parent, name, ino);
+}
+
+void log_symlink(fuse_ino_t parent, const char *name, fuse_ino_t ino, const char *link, fuse_ino_t link_ino) {
+	printf("SYMLINK || parent_ino=%" PRIu64 ", name=%s, ino=%" PRIu64 ", link=%s, link_ino=%" PRIu64 "\n", parent, name, ino, link, link_ino);
+}
+
+void log_mknod(fuse_ino_t parent, const char *name) {
+	printf("MKNOD || parent_ino=%" PRIu64 ", name=%s\n", parent, name);
+}

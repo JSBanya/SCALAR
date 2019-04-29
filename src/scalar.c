@@ -233,12 +233,30 @@ static void scalar_mknod_symlink(fuse_req_t req, fuse_ino_t parent, const char *
     saverr = errno;
     if (res == -1)
         goto out;
+
     saverr = scalar_do_lookup(req, parent, name, &e);
     if (saverr)
         goto out;
-    if (scalar_debug(req)) fprintf(stderr, "  %lli/%s -> %lli\n", (unsigned long long) parent, name, (unsigned long long) e.ino);
+
+    // Log if successful
+    if (S_ISDIR(mode))
+        log_mkdir(parent, name, e.ino);
+    else if(S_ISLNK(mode)) {
+        // Get inode for symlink
+        struct fuse_entry_param sym_e;
+        saverr = scalar_do_lookup(req, parent, link, &sym_e);
+        if(saverr)
+            goto out;
+        scalar_forget_one(req, sym_e.ino, 1);
+
+        log_symlink(parent, name, e.ino, link, sym_e.ino);
+    } else {
+        log_mknod(parent, name);
+    }
+
     fuse_reply_entry(req, &e);
     return;
+
 out:
     if (newfd != -1)
         close(newfd);
@@ -259,7 +277,6 @@ static void scalar_mkdir(fuse_req_t req, fuse_ino_t parent, const char *name, mo
 static void scalar_symlink(fuse_req_t req, const char *link, fuse_ino_t parent, const char *name) {
     scalar_mknod_symlink(req, parent, name, S_IFLNK, 0, link);
 }
-
 
 // Helper function for scalar_link
 static int linkat_empty_nofollow(struct scalar_inode *inode, int dfd, const char *name) {
@@ -307,7 +324,13 @@ out_err:
 // Remove a directory
 static void scalar_rmdir(fuse_req_t req, fuse_ino_t parent, const char *name) {
     int res = unlinkat(scalar_fd(req, parent), name, AT_REMOVEDIR);
-    fuse_reply_err(req, res == -1 ? errno : 0);
+    if(res != -1) {
+        // Log if successful
+        // There is no point in logging the inode on directory removal so we purposefully avoid doing so
+        log_rmdir(parent, name);
+        fuse_reply_err(req, 0);
+    } else
+        fuse_reply_err(req, errno);
 }
 
 // Rename a file
@@ -338,7 +361,13 @@ static void scalar_rename(fuse_req_t req, fuse_ino_t parent, const char *name, f
 // Remove a file
 static void scalar_unlink(fuse_req_t req, fuse_ino_t parent, const char *name) {       
     int res = unlinkat(scalar_fd(req, parent), name, 0);
-    fuse_reply_err(req, res == -1 ? errno : 0);
+    if(res != -1) {
+        // Log if successful
+        // There is no point in logging the inode on file removal so we purposefully avoid doing so
+        log_unlink(parent, name);
+        fuse_reply_err(req, 0);
+    } else
+        fuse_reply_err(req, errno);
 }
 
 // Remove 'n' references to an inode
