@@ -209,11 +209,15 @@ static void scalar_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) {
     int err;
     if (scalar_debug(req))
         fprintf(stderr, "scalar_lookup(parent=%" PRIu64 ", name=%s)\n", parent, name);
+
     err = scalar_do_lookup(req, parent, name, &e); // Populates e with attributes
     if (err)
         fuse_reply_err(req, err);
-    else
+    else {
+        ino_t parent_sys_ino = scalar_inode(req, parent)->ino;
+        log_lookup(parent_sys_ino, name, e.attr.st_ino);
         fuse_reply_entry(req, &e);
+    }
 }
 
 // Helper function to encapsulate similar functionality of mknod, mkdir, and symlink into one function
@@ -239,9 +243,10 @@ static void scalar_mknod_symlink(fuse_req_t req, fuse_ino_t parent, const char *
         goto out;
 
     // Log if successful
-    if (S_ISDIR(mode))
-        log_mkdir(parent, name, e.ino);
-    else if(S_ISLNK(mode)) {
+    ino_t parent_sys_ino = scalar_inode(req, parent)->ino;
+    if (S_ISDIR(mode)) {
+        log_mkdir(parent_sys_ino, name, e.attr.st_ino);
+    } else if(S_ISLNK(mode)) {
         // Get inode for symlink
         struct fuse_entry_param sym_e;
         saverr = scalar_do_lookup(req, parent, link, &sym_e);
@@ -249,9 +254,9 @@ static void scalar_mknod_symlink(fuse_req_t req, fuse_ino_t parent, const char *
             goto out;
         scalar_forget_one(req, sym_e.ino, 1);
 
-        log_symlink(parent, name, e.ino, link, sym_e.ino);
+        log_symlink(parent_sys_ino, name, e.attr.st_ino, link, sym_e.attr.st_ino);
     } else {
-        log_mknod(parent, name);
+        log_mknod(parent_sys_ino, name);
     }
 
     fuse_reply_entry(req, &e);
@@ -327,7 +332,8 @@ static void scalar_rmdir(fuse_req_t req, fuse_ino_t parent, const char *name) {
     if(res != -1) {
         // Log if successful
         // There is no point in logging the inode on directory removal so we purposefully avoid doing so
-        log_rmdir(parent, name);
+        ino_t parent_sys_ino = scalar_inode(req, parent)->ino;
+        log_rmdir(parent_sys_ino, name);
         fuse_reply_err(req, 0);
     } else
         fuse_reply_err(req, errno);
@@ -351,7 +357,9 @@ static void scalar_rename(fuse_req_t req, fuse_ino_t parent, const char *name, f
     int res = renameat(scalar_fd(req, parent), name, scalar_fd(req, newparent), newname);
     if(res != -1) {
         // Log only if success
-        log_rename(parent, name, newparent, newname, e.ino);
+        ino_t parent_sys_ino = scalar_inode(req, parent)->ino;
+        ino_t new_parent_sys_ino = scalar_inode(req, newparent)->ino;
+        log_rename(parent_sys_ino, name, new_parent_sys_ino, newname, e.attr.st_ino);
         fuse_reply_err(req, 0);
     } else {
         fuse_reply_err(req, errno);
@@ -364,7 +372,8 @@ static void scalar_unlink(fuse_req_t req, fuse_ino_t parent, const char *name) {
     if(res != -1) {
         // Log if successful
         // There is no point in logging the inode on file removal so we purposefully avoid doing so
-        log_unlink(parent, name);
+        ino_t parent_sys_ino = scalar_inode(req, parent)->ino;
+        log_unlink(parent_sys_ino, name);
         fuse_reply_err(req, 0);
     } else
         fuse_reply_err(req, errno);
@@ -598,8 +607,10 @@ static void scalar_create(fuse_req_t req, fuse_ino_t parent, const char *name, m
         fuse_reply_err(req, err);
     else {
         // Log file creation
-        if(not_exists)
-            log_create(parent, name, e.ino);
+        if(not_exists) {
+            ino_t parent_sys_ino = scalar_inode(req, parent)->ino;
+            log_create(parent_sys_ino, name, e.attr.st_ino);
+        }
 
         // Reply
         fuse_reply_create(req, &e, fi);
@@ -709,7 +720,8 @@ static void scalar_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec 
         fprintf(stderr, "scalar_write(ino=%" PRIu64 ", size=%zd, off=%lu)\n", ino, out_buf.buf[0].size, (unsigned long) off);
 
     // Log write
-    log_write_buf(ino, in_buf, off);
+    ino_t sys_ino = scalar_inode(req, ino)->ino;
+    log_write_buf(sys_ino, in_buf, off);
 
     res = fuse_buf_copy(&out_buf, in_buf, 0);
     if(res < 0)
@@ -897,7 +909,7 @@ int main(int argc, char *argv[]) {
     pthread_mutex_init(&scalar.mutex, NULL);
     scalar.root.next = scalar.root.prev = &scalar.root;
     scalar.root.fd = -1;
-    scalar.cache = CACHE_NORMAL;
+    scalar.cache = CACHE_NEVER;
 
     if (fuse_parse_cmdline(&args, &opts) != 0)
         return 1;
