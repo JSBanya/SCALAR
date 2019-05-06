@@ -898,6 +898,7 @@ out:
 }
 
 int main(int argc, char *argv[]) {
+    assert(sizeof(fuse_ino_t) >= sizeof(uintptr_t));
     struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
     struct fuse_session *se;
     struct fuse_cmdline_opts opts;

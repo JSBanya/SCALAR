@@ -20,17 +20,6 @@
 #include <sys/file.h>
 #include <sys/xattr.h>
 
-/* We are re-using pointers to our `struct scalar_inode` and `struct
-   scalar_dirp` elements as inodes. This means that we must be able to
-   store uintptr_t values in a fuse_ino_t variable. The following
-   incantation checks this condition at compile time. */
-#if defined(__GNUC__) && (__GNUC__ > 4 || __GNUC__ == 4 && __GNUC_MINOR__ >= 6) && !defined __cplusplus
-_Static_assert(sizeof(fuse_ino_t) >= sizeof(uintptr_t), "fuse_ino_t too small to hold uintptr_t values!");
-#else
-struct _uintptr_to_must_hold_fuse_ino_t_dummy_struct \
-        { unsigned _uintptr_to_must_hold_fuse_ino_t: ((sizeof(fuse_ino_t) >= sizeof(uintptr_t)) ? 1 : -1); };
-#endif
-
 struct scalar_inode {
     struct scalar_inode *next; /* protected by scalar->mutex */
     struct scalar_inode *prev; /* protected by scalar->mutex */
@@ -39,7 +28,16 @@ struct scalar_inode {
     ino_t ino;
     dev_t dev;
     uint64_t refcount; /* protected by scalar->mutex */
+    char *parent;
 };
+
+/* We are re-using pointers to our `struct scalar_inode` and `struct
+   scalar_dirp` elements as inodes. This means that we must be able to
+   store uintptr_t values in a fuse_ino_t variable. The following
+   incantation checks this condition at compile time.*/
+#if defined(__GNUC__) && (__GNUC__ > 4 || __GNUC__ == 4 && __GNUC_MINOR__ >= 6) && !defined __cplusplus
+_Static_assert(sizeof(fuse_ino_t) >= sizeof(uintptr_t), "fuse_ino_t too small to hold uintptr_t values!");
+#endif
 
 enum {
     CACHE_NEVER,
