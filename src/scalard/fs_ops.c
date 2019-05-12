@@ -24,10 +24,10 @@
 #include "log.h"
 
 struct scalar_dirp {
-    int fd;
-    DIR *dp;
-    struct dirent *entry;
-    off_t offset;
+  int fd;
+  DIR *dp;
+  struct dirent *entry;
+  off_t offset;
 };
 
 static struct scalar_dirp *scalar_dirp(struct fuse_file_info *fi) {
@@ -125,7 +125,7 @@ static void scalar_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr, in
   }
 
   if (res == -1)
-      goto out_err;
+    goto out_err;
 
   ino_t sys_ino = scalar_inode(req, ino)->ino;
 
@@ -225,7 +225,7 @@ static void scalar_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr, in
   }
 
   return scalar_getattr(req, ino, fi);
-out_err:
+ out_err:
   saverr = errno;
   fuse_reply_err(req, saverr);
 }
@@ -289,10 +289,10 @@ static int scalar_do_lookup(fuse_req_t req, fuse_ino_t parent, const char *name,
   if (scalar_debug(req))
     fprintf(stderr, "  %lli/%s -> %lli\n", (unsigned long long) parent, name, (unsigned long long) e->ino);
   return 0;
-out_err:
+ out_err:
   saverr = errno;
   if (newfd != -1)
-      close(newfd);
+    close(newfd);
   return saverr;
 }
 
@@ -383,7 +383,7 @@ static void scalar_mknod_symlink(fuse_req_t req, fuse_ino_t parent, const char *
   fuse_reply_entry(req, &e);
   return;
 
-out:
+ out:
   if (newfd != -1)
     close(newfd);
   fuse_reply_err(req, saverr);
@@ -445,7 +445,7 @@ static void scalar_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t parent, const
 
   fuse_reply_entry(req, &e);
   return;
-out_err:
+ out_err:
   saverr = errno;
   fuse_reply_err(req, saverr);
 }
@@ -494,29 +494,29 @@ static void scalar_rename(fuse_req_t req, fuse_ino_t parent, const char *name, f
 static void scalar_unlink(fuse_req_t req, fuse_ino_t parent, const char *name) { 
   int parent_fd = scalar_fd(req, parent);
 
-    // Get contents
-    struct fuse_entry_param e;
-    int res = scalar_do_lookup(req, parent, name, &e);
-    if (res)
-        goto out_err;
-    scalar_forget_one(req, e.ino, 1);
+  // Get contents
+  struct fuse_entry_param e;
+  int res = scalar_do_lookup(req, parent, name, &e);
+  if (res)
+    goto out_err;
+  scalar_forget_one(req, e.ino, 1);
 
-    // Get file contents
-    ssize_t file_size = e.attr.st_size;
-    char *content = malloc(file_size+1);
+  // Get file contents
+  ssize_t file_size = e.attr.st_size;
+  char *content = malloc(file_size+1);
 
-    int fd = openat(parent_fd, name, O_RDONLY);
-    lseek(fd, 0, SEEK_SET);
-    ssize_t bytes_read = read(fd, content, file_size);
-    content[file_size] = '\0';
+  int fd = openat(parent_fd, name, O_RDONLY);
+  lseek(fd, 0, SEEK_SET);
+  ssize_t bytes_read = read(fd, content, file_size);
+  content[file_size] = '\0';
 
-    res = close(fd);
-    if (res == -1 || bytes_read != file_size) {
-        free(content);
-        goto out_err;
-    }
+  res = close(fd);
+  if (res == -1 || bytes_read != file_size) {
+    free(content);
+    goto out_err;
+  }
 
-    // Unlink
+  // Unlink
   res = unlinkat(parent_fd, name, 0);
   if(res != -1) {
     // Log if successful
@@ -524,11 +524,11 @@ static void scalar_unlink(fuse_req_t req, fuse_ino_t parent, const char *name) {
 
     log_unlink(parent_sys_ino, e.attr.st_ino, name, content);
     fuse_reply_err(req, 0);
-        return;
+    return;
   }
   
-out_err:
-    fuse_reply_err(req, errno);
+ out_err:
+  fuse_reply_err(req, errno);
 }
 
 // Forget about an inode
@@ -550,14 +550,14 @@ static void scalar_forget_multi(fuse_req_t req, size_t count, struct fuse_forget
 
 // Read symbolic link
 static void scalar_readlink(fuse_req_t req, fuse_ino_t ino) {
-    char buf[PATH_MAX + 1];
-    int res = readlinkat(scalar_fd(req, ino), "", buf, sizeof(buf));
-    if (res == -1)
-      return (void) fuse_reply_err(req, errno);
-    if (res == sizeof(buf))
-      return (void) fuse_reply_err(req, ENAMETOOLONG);
-    buf[res] = '\0';
-    fuse_reply_readlink(req, buf);
+  char buf[PATH_MAX + 1];
+  int res = readlinkat(scalar_fd(req, ino), "", buf, sizeof(buf));
+  if (res == -1)
+    return (void) fuse_reply_err(req, errno);
+  if (res == sizeof(buf))
+    return (void) fuse_reply_err(req, ENAMETOOLONG);
+  buf[res] = '\0';
+  fuse_reply_readlink(req, buf);
 }
 
 // Open a directory
@@ -577,9 +577,9 @@ static void scalar_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info
   fi->fh = (uintptr_t) d;
   fuse_reply_open(req, fi);
   return;
-out_errno:
+ out_errno:
   error = errno;
-out_err:
+ out_err:
   if (d) {
     if (d->fd != -1)
       close(d->fd);
@@ -633,10 +633,11 @@ static void scalar_do_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t
     if (plus) {
       struct fuse_entry_param e;
       if (is_dot_or_dotdot(name)) {
-        e = (struct fuse_entry_param) {
-          .attr.st_ino = d->entry->d_ino,
-          .attr.st_mode = d->entry->d_type << 12,
-        };
+        e = (struct fuse_entry_param)
+          {
+           .attr.st_ino = d->entry->d_ino,
+           .attr.st_mode = d->entry->d_type << 12,
+          };
       } else {
         err = scalar_do_lookup(req, ino, name, &e);
         if (err)
@@ -645,10 +646,11 @@ static void scalar_do_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t
       }
       entsize = fuse_add_direntry_plus(req, p, rem, name, &e, nextoff);
     } else {
-      struct stat st = {
-        .st_ino = d->entry->d_ino,
-        .st_mode = d->entry->d_type << 12,
-      };
+      struct stat st =
+        {
+         .st_ino = d->entry->d_ino,
+         .st_mode = d->entry->d_type << 12,
+        };
       entsize = fuse_add_direntry(req, p, rem, name, &st, nextoff);
     }
     if (entsize > rem) {
@@ -663,7 +665,7 @@ static void scalar_do_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t
     d->offset = nextoff;
   }
   err = 0;
-error:
+ error:
   // If there's an error, we can only signal it if we haven't stored
   // any entries yet - otherwise we'd end up with wrong lookup
   // counts for the entries that are already in the buffer. So we
@@ -794,7 +796,7 @@ static void scalar_fsync(fuse_req_t req, fuse_ino_t ino, int datasync, struct fu
 static void scalar_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t offset, struct fuse_file_info *fi) {
   struct fuse_bufvec buf = FUSE_BUFVEC_INIT(size);
   if (scalar_debug(req))
-      fprintf(stderr, "scalar_read(ino=%" PRIu64 ", size=%zd, ""off=%lu)\n", ino, size, (unsigned long) offset);
+    fprintf(stderr, "scalar_read(ino=%" PRIu64 ", size=%zd, ""off=%lu)\n", ino, size, (unsigned long) offset);
   buf.buf[0].flags = FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK;
   buf.buf[0].fd = fi->fh;
   buf.buf[0].pos = offset;
@@ -855,7 +857,7 @@ static void scalar_fallocate(fuse_req_t req, fuse_ino_t ino, int mode, off_t off
     log_fallocate(sys_ino, attr.st_size, offset, length);
   }
 
-out: 
+ out:
   fuse_reply_err(req, err);
 }
 
@@ -900,12 +902,12 @@ static void scalar_getxattr(fuse_req_t req, fuse_ino_t ino, const char *name, si
       goto out_err;
     fuse_reply_xattr(req, ret);
   }
-out_free:
+ out_free:
   free(value);
   return;
-out_err:
+ out_err:
   saverr = errno;
-out:
+ out:
   fuse_reply_err(req, saverr);
   goto out_free;
 }
@@ -929,26 +931,26 @@ static void scalar_listxattr(fuse_req_t req, fuse_ino_t ino, size_t size) {
   if (size) {
     value = malloc(size);
     if (!value)
-        goto out_err;
+      goto out_err;
     ret = listxattr(procname, value, size);
     if (ret == -1)
-        goto out_err;
+      goto out_err;
     saverr = 0;
     if (ret == 0)
-        goto out;
+      goto out;
     fuse_reply_buf(req, value, ret);
   } else {
     ret = listxattr(procname, NULL, 0);
     if (ret == -1)
-        goto out_err;
+      goto out_err;
     fuse_reply_xattr(req, ret);
   }
-out_free:
+ out_free:
   free(value);
   return;
-out_err:
+ out_err:
   saverr = errno;
-out:
+ out:
   fuse_reply_err(req, saverr);
   goto out_free;
 }
@@ -1001,7 +1003,7 @@ static void scalar_setxattr(fuse_req_t req, fuse_ino_t ino, const char *name, co
   }
   free(old_value);
 
-out:
+ out:
   fuse_reply_err(req, saverr);
 }
 
@@ -1045,46 +1047,47 @@ static void scalar_removexattr(fuse_req_t req, fuse_ino_t ino, const char *name)
   }
   free(old_value);
 
-out:
+ out:
   fuse_reply_err(req, saverr);
 }
 
-const struct fuse_lowlevel_ops fs_ops = {
-  .init           = scalar_init,
-  .destroy        = NULL,
-  .lookup         = scalar_lookup,
-  .mkdir          = scalar_mkdir,
-  .mknod          = scalar_mknod,
-  .symlink        = scalar_symlink,
-  .link           = scalar_link,
-  .unlink         = scalar_unlink,
-  .rmdir          = scalar_rmdir,
-  .rename         = scalar_rename,
-  .forget         = scalar_forget,
-  .forget_multi   = scalar_forget_multi,
-  .getattr        = scalar_getattr,
-  .setattr        = scalar_setattr,
-  .readlink       = scalar_readlink,
-  .opendir        = scalar_opendir,
-  .readdir        = scalar_readdir,
-  .readdirplus    = scalar_readdirplus,
-  .releasedir     = scalar_releasedir,
-  .fsyncdir       = scalar_fsyncdir,
-  .create         = scalar_create,
-  .open           = scalar_open,
-  .release        = scalar_release,
-  .flush          = scalar_flush,
-  .fsync          = scalar_fsync,
-  .read           = scalar_read,
-  .write_buf      = scalar_write_buf,
-  .statfs         = scalar_statfs,
-  .fallocate      = scalar_fallocate,
-  .flock          = scalar_flock,
-  .getxattr       = scalar_getxattr,
-  .listxattr      = scalar_listxattr,
-  .setxattr       = scalar_setxattr,
-  .removexattr    = scalar_removexattr,
-};
+const struct fuse_lowlevel_ops fs_ops =
+  {
+   .init           = scalar_init,
+   .destroy        = NULL,
+   .lookup         = scalar_lookup,
+   .mkdir          = scalar_mkdir,
+   .mknod          = scalar_mknod,
+   .symlink        = scalar_symlink,
+   .link           = scalar_link,
+   .unlink         = scalar_unlink,
+   .rmdir          = scalar_rmdir,
+   .rename         = scalar_rename,
+   .forget         = scalar_forget,
+   .forget_multi   = scalar_forget_multi,
+   .getattr        = scalar_getattr,
+   .setattr        = scalar_setattr,
+   .readlink       = scalar_readlink,
+   .opendir        = scalar_opendir,
+   .readdir        = scalar_readdir,
+   .readdirplus    = scalar_readdirplus,
+   .releasedir     = scalar_releasedir,
+   .fsyncdir       = scalar_fsyncdir,
+   .create         = scalar_create,
+   .open           = scalar_open,
+   .release        = scalar_release,
+   .flush          = scalar_flush,
+   .fsync          = scalar_fsync,
+   .read           = scalar_read,
+   .write_buf      = scalar_write_buf,
+   .statfs         = scalar_statfs,
+   .fallocate      = scalar_fallocate,
+   .flock          = scalar_flock,
+   .getxattr       = scalar_getxattr,
+   .listxattr      = scalar_listxattr,
+   .setxattr       = scalar_setxattr,
+   .removexattr    = scalar_removexattr,
+  };
 const struct fuse_lowlevel_ops *fs_ops_p = &fs_ops;
 
 void fs_ops_init() {
