@@ -1,2 +1,4 @@
-scalar
-performanceTest
+/scalar
+/scalard
+*.d
+*.o

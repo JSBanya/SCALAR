@@ -1,9 +1,21 @@
-all: scalar
+CPPFLAGS = -g -Wall $(shell pkg-config fuse3 --cflags) -DFUSE_USE_VERSION=31
+DAEMON_LDFLAGS = $(shell pkg-config fuse3 --libs) -lpthread
 
-scalar:
-	gcc -Wall src/scalar.c src/log.c `pkg-config fuse3 --cflags --libs` -o scalar
+all: scalard scalar
+.PHONY: all
 
-performance_test:
-	gcc -Wall performance/main.c -o performanceTest
+%.d: %.c
+	@set -e; rm -f $@; \
+	$(CC) -M $(CPPFLAGS) $< > $@.$$$$; \
+	sed 's,\($*\)\.o[ :]*,\1.o $@ : ,g' < $@.$$$$ > $@; \
+	rm -f $@.$$$$
 
-.PHONY: scalar performance_test
+scalard_sources = $(wildcard src/scalard/*.c)
+scalar_sources = $(wildcard src/scalar/*.c)
+
+include $(scalard_sources:.c=.d) $(scalar_sources:.c=.d)
+
+scalard: $(scalard_sources:.c=.o)
+	$(CC) $(LDFLAGS) $(DAEMON_LDFLAGS) -o $@ $+ $(LOADLIBES) $(LDLIBS)
+scalar: $(scalar_sources:.c=.o)
+	$(CC) $(LDFLAGS) -o $@ $+ $(LOADLIBES) $(LDLIBS)
