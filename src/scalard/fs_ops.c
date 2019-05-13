@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <unistd.h>
 #include <assert.h>
+#include <stdatomic.h>
 #include <errno.h>
 #include <err.h>
 #include <limits.h>
@@ -34,9 +35,12 @@ static struct dir_data *dir_data(struct fuse_file_info *fi) {
   return (struct dir_data *) (uintptr_t) fi->fh;
 }
 
+atomic_uint_fast64_t current_generation;
+
 struct inode_data {
   struct inode_data *next;
   struct inode_data *prev;
+  uint64_t generation;
   int fd;
   bool is_symlink;
   ino_t ino;
@@ -264,6 +268,8 @@ static int do_lookup(fuse_ino_t parent, const char *name, struct fuse_entry_para
     inode = calloc(1, sizeof(struct inode_data));
     if (!inode)
       goto out_err;
+    inode->generation =
+      atomic_fetch_add_explicit(&current_generation, 1, memory_order_relaxed);
     inode->is_symlink = S_ISLNK(e->attr.st_mode);
     inode->refcount = 1;
     inode->fd = newfd;
@@ -277,6 +283,7 @@ static int do_lookup(fuse_ino_t parent, const char *name, struct fuse_entry_para
     prev->next = inode;
   }
   e->ino = (uintptr_t) inode;
+  e->generation = inode->generation;
   return 0;
  out_err:
   saverr = errno;
