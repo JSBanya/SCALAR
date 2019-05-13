@@ -23,25 +23,20 @@
 
 #include "log.h"
 
-struct scalar_dirp {
+struct dir_data {
   int fd;
   DIR *dp;
   struct dirent *entry;
   off_t offset;
 };
 
-static struct scalar_dirp *scalar_dirp(struct fuse_file_info *fi) {
-  return (struct scalar_dirp *) (uintptr_t) fi->fh;
+static struct dir_data *dir_data(struct fuse_file_info *fi) {
+  return (struct dir_data *) (uintptr_t) fi->fh;
 }
 
-// Get user data from the request
-static struct scalar_data *scalar_data(fuse_req_t req) {
-  return (struct scalar_data *) fuse_req_userdata(req);
-}
-
-struct scalar_inode {
-  struct scalar_inode *next; /* protected by scalar->mutex */
-  struct scalar_inode *prev; /* protected by scalar->mutex */
+struct inode_data {
+  struct inode_data *next; /* protected by scalar->mutex */
+  struct inode_data *prev; /* protected by scalar->mutex */
   int fd;
   bool is_symlink;
   ino_t ino;
@@ -50,7 +45,7 @@ struct scalar_inode {
   char *parent;
 };
 
-struct scalar_inode scalar_root =
+struct inode_data scalar_root =
   {
    .next = &scalar_root, .prev = &scalar_root,
    .fd = -1, .refcount = 2,
@@ -58,21 +53,16 @@ struct scalar_inode scalar_root =
   };
 
 // Get inode struct from fuse inode
-static struct scalar_inode *scalar_inode(fuse_req_t req, fuse_ino_t ino) {
+static struct inode_data *inode_data(fuse_req_t req, fuse_ino_t ino) {
   if (ino == FUSE_ROOT_ID)
     return &scalar_root;
   else
-    return (struct scalar_inode *) (uintptr_t) ino;
+    return (struct inode_data *) (uintptr_t) ino;
 }
 
 // Get file descriptor for inode
 static int scalar_fd(fuse_req_t req, fuse_ino_t ino) {
-  return scalar_inode(req, ino)->fd;
-}
-
-// Check if debug is enabled
-static bool scalar_debug(fuse_req_t req) {
-  return 0;
+  return inode_data(req, ino)->fd;
 }
 
 // Initialize filesystem
@@ -93,7 +83,7 @@ static void scalar_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info
   fuse_reply_attr(req, &buf, 0);
 }
 
-static int utimensat_empty_nofollow(struct scalar_inode *inode, const struct timespec *tv) {
+static int utimensat_empty_nofollow(struct inode_data *inode, const struct timespec *tv) {
   int res;
   char procname[64];
   if (inode->is_symlink) {
@@ -111,7 +101,7 @@ static int utimensat_empty_nofollow(struct scalar_inode *inode, const struct tim
 static void scalar_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr, int to_set, struct fuse_file_info *fi) {
   int saverr;
   char procname[64];
-  struct scalar_inode *inode = scalar_inode(req, ino);
+  struct inode_data *inode = inode_data(req, ino);
   int ifd = inode->fd;
   int res;
 
@@ -127,7 +117,7 @@ static void scalar_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr, in
   if (res == -1)
     goto out_err;
 
-  ino_t sys_ino = scalar_inode(req, ino)->ino;
+  ino_t sys_ino = inode_data(req, ino)->ino;
 
   // Set attributes based on to_set
   if (to_set & FUSE_SET_ATTR_MODE) {
@@ -231,9 +221,9 @@ static void scalar_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr, in
 }
 
 // Find inode in the linked list of inodes
-static struct scalar_inode *scalar_find(struct scalar_data *scalar, struct stat *st) {
-  struct scalar_inode *p;
-  struct scalar_inode *ret = NULL;
+static struct inode_data *scalar_find(struct stat *st) {
+  struct inode_data *p;
+  struct inode_data *ret = NULL;
   for (p = scalar_root.next; p != &scalar_root; p = p->next) {
     if (p->ino == st->st_ino && p->dev == st->st_dev) {
       assert(p->refcount > 0);
@@ -251,7 +241,7 @@ static int scalar_do_lookup(fuse_req_t req, fuse_ino_t parent, const char *name,
   int newfd;
   int res;
   int saverr;
-  struct scalar_inode *inode;
+  struct inode_data *inode;
   memset(e, 0, sizeof(*e));
   e->attr_timeout = 0;
   e->entry_timeout = 0;
@@ -261,16 +251,16 @@ static int scalar_do_lookup(fuse_req_t req, fuse_ino_t parent, const char *name,
   res = fstatat(newfd, "", &e->attr, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW); // Get attributes for opened file
   if (res == -1)
     goto out_err;
-  inode = scalar_find(scalar_data(req), &e->attr); // Find if inode exists in linked list
+  inode = scalar_find(&e->attr); // Find if inode exists in linked list
   if (inode) {
     // Inode already exists in the linked list
     close(newfd);
     newfd = -1;
   } else {
     // Create new inode entry from file attributes
-    struct scalar_inode *prev, *next;
+    struct inode_data *prev, *next;
     saverr = ENOMEM;
-    inode = calloc(1, sizeof(struct scalar_inode));
+    inode = calloc(1, sizeof(struct inode_data));
     if (!inode)
       goto out_err;
     inode->is_symlink = S_ISLNK(e->attr.st_mode);
@@ -286,8 +276,6 @@ static int scalar_do_lookup(fuse_req_t req, fuse_ino_t parent, const char *name,
     prev->next = inode;
   }
   e->ino = (uintptr_t) inode;
-  if (scalar_debug(req))
-    fprintf(stderr, "  %lli/%s -> %lli\n", (unsigned long long) parent, name, (unsigned long long) e->ino);
   return 0;
  out_err:
   saverr = errno;
@@ -300,27 +288,25 @@ static int scalar_do_lookup(fuse_req_t req, fuse_ino_t parent, const char *name,
 static void scalar_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) {
   struct fuse_entry_param e;
   int err;
-  if (scalar_debug(req))
-    fprintf(stderr, "scalar_lookup(parent=%" PRIu64 ", name=%s)\n", parent, name);
 
   err = scalar_do_lookup(req, parent, name, &e); // Populates e with attributes
   if (err)
     fuse_reply_err(req, err);
   else {
-    ino_t parent_sys_ino = scalar_inode(req, parent)->ino;
+    ino_t parent_sys_ino = inode_data(req, parent)->ino;
     log_lookup(parent_sys_ino, name, e.attr.st_ino);
     fuse_reply_entry(req, &e);
   }
 }
 
 // Remove 'n' references to an inode
-static void unref_inode(struct scalar_data *scalar, struct scalar_inode *inode, uint64_t n) {
+static void unref_inode(struct inode_data *inode, uint64_t n) {
   if (!inode) return;
   assert(inode->refcount >= n);
   inode->refcount -= n;
   if (!inode->refcount) {
     // It is recommended to defer removal of the inode until the lookup count reaches zero
-    struct scalar_inode *prev, *next;
+    struct inode_data *prev, *next;
     prev = inode->prev;
     next = inode->next;
     next->prev = prev;
@@ -333,12 +319,8 @@ static void unref_inode(struct scalar_data *scalar, struct scalar_inode *inode, 
 
 // Forget references to a single inode
 static void scalar_forget_one(fuse_req_t req, fuse_ino_t ino, uint64_t nlookup) {
-  struct scalar_data *scalar = scalar_data(req);
-  struct scalar_inode *inode = scalar_inode(req, ino);
-  if (scalar_debug(req)) { 
-    fprintf(stderr, "  forget %lli %lli -%lli\n", (unsigned long long) ino, (unsigned long long) inode->refcount, (unsigned long long) nlookup);
-  }
-  unref_inode(scalar, inode, nlookup);
+  struct inode_data *inode = inode_data(req, ino);
+  unref_inode(inode, nlookup);
 }
 
 // Helper function to encapsulate similar functionality of mknod, mkdir, and symlink into one function
@@ -346,7 +328,7 @@ static void scalar_mknod_symlink(fuse_req_t req, fuse_ino_t parent, const char *
   int newfd = -1;
   int res;
   int saverr;
-  struct scalar_inode *dir = scalar_inode(req, parent);
+  struct inode_data *dir = inode_data(req, parent);
   struct fuse_entry_param e;
   saverr = ENOMEM;
   if (S_ISDIR(mode))
@@ -364,7 +346,7 @@ static void scalar_mknod_symlink(fuse_req_t req, fuse_ino_t parent, const char *
     goto out;
 
   // Log if successful
-  ino_t parent_sys_ino = scalar_inode(req, parent)->ino;
+  ino_t parent_sys_ino = inode_data(req, parent)->ino;
   if (S_ISDIR(mode)) {
     log_mkdir(parent_sys_ino, name, e.attr.st_ino);
   } else if(S_ISLNK(mode)) {
@@ -405,7 +387,7 @@ static void scalar_symlink(fuse_req_t req, const char *link, fuse_ino_t parent, 
 }
 
 // Helper function for scalar_link
-static int linkat_empty_nofollow(struct scalar_inode *inode, int dfd, const char *name) {
+static int linkat_empty_nofollow(struct inode_data *inode, int dfd, const char *name) {
   int res;
   char procname[64];
   if (inode->is_symlink) {
@@ -422,7 +404,7 @@ static int linkat_empty_nofollow(struct scalar_inode *inode, int dfd, const char
 // Create a hard link
 static void scalar_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t parent, const char *name) {
   int res;
-  struct scalar_inode *inode = scalar_inode(req, ino);
+  struct inode_data *inode = inode_data(req, ino);
   struct fuse_entry_param e;
   int saverr;
   memset(&e, 0, sizeof(struct fuse_entry_param));
@@ -440,7 +422,7 @@ static void scalar_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t parent, const
   inode->refcount++;
   e.ino = (uintptr_t) inode;
 
-  ino_t parent_sys_ino = scalar_inode(req, parent)->ino;
+  ino_t parent_sys_ino = inode_data(req, parent)->ino;
   log_link(parent_sys_ino, name, e.attr.st_ino);
 
   fuse_reply_entry(req, &e);
@@ -456,7 +438,7 @@ static void scalar_rmdir(fuse_req_t req, fuse_ino_t parent, const char *name) {
   if(res != -1) {
     // Log if successful
     // There is no point in logging the inode on directory removal so we purposefully avoid doing so
-    ino_t parent_sys_ino = scalar_inode(req, parent)->ino;
+    ino_t parent_sys_ino = inode_data(req, parent)->ino;
     log_rmdir(parent_sys_ino, name);
     fuse_reply_err(req, 0);
   } else
@@ -481,8 +463,8 @@ static void scalar_rename(fuse_req_t req, fuse_ino_t parent, const char *name, f
   int res = renameat(scalar_fd(req, parent), name, scalar_fd(req, newparent), newname);
   if(res != -1) {
     // Log only if success
-    ino_t parent_sys_ino = scalar_inode(req, parent)->ino;
-    ino_t new_parent_sys_ino = scalar_inode(req, newparent)->ino;
+    ino_t parent_sys_ino = inode_data(req, parent)->ino;
+    ino_t new_parent_sys_ino = inode_data(req, newparent)->ino;
     log_rename(parent_sys_ino, name, new_parent_sys_ino, newname, e.attr.st_ino);
     fuse_reply_err(req, 0);
   } else {
@@ -520,7 +502,7 @@ static void scalar_unlink(fuse_req_t req, fuse_ino_t parent, const char *name) {
   res = unlinkat(parent_fd, name, 0);
   if(res != -1) {
     // Log if successful
-    ino_t parent_sys_ino = scalar_inode(req, parent)->ino;
+    ino_t parent_sys_ino = inode_data(req, parent)->ino;
 
     log_unlink(parent_sys_ino, e.attr.st_ino, name, content);
     fuse_reply_err(req, 0);
@@ -563,7 +545,7 @@ static void scalar_readlink(fuse_req_t req, fuse_ino_t ino) {
 // Open a directory
 static void scalar_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
   int error = ENOMEM;
-  struct scalar_dirp *d = calloc(1, sizeof(struct scalar_dirp));
+  struct dir_data *d = calloc(1, sizeof(struct dir_data));
   if (d == NULL)
     goto out_err;
   d->fd = openat(scalar_fd(req, ino), ".", O_RDONLY);
@@ -594,7 +576,7 @@ static int is_dot_or_dotdot(const char *name) {
 
 // Helper function for readdir
 static void scalar_do_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t offset, struct fuse_file_info *fi, int plus) {
-  struct scalar_dirp *d = scalar_dirp(fi);
+  struct dir_data *d = dir_data(fi);
   char *buf;
   char *p;
   size_t rem = size;
@@ -691,7 +673,7 @@ static void scalar_readdirplus(fuse_req_t req, fuse_ino_t ino, size_t size, off_
 // Release an open directory
 // For every opendir call there will be exactly one releasedir call (unless the filesystem is force-unmounted).
 static void scalar_releasedir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
-  struct scalar_dirp *d = scalar_dirp(fi);
+  struct dir_data *d = dir_data(fi);
   (void) ino;
   closedir(d->dp);
   free(d);
@@ -704,8 +686,6 @@ static void scalar_create(fuse_req_t req, fuse_ino_t parent, const char *name, m
   int fd;
   struct fuse_entry_param e;
   int err;
-  if (scalar_debug(req))
-    fprintf(stderr, "scalar_create(parent=%" PRIu64 ", name=%s)\n", parent, name);
 
   // Test for file existence (to log only creates)
   int not_exists = faccessat(scalar_fd(req, parent), name, F_OK, AT_EACCESS | AT_SYMLINK_NOFOLLOW);
@@ -723,7 +703,7 @@ static void scalar_create(fuse_req_t req, fuse_ino_t parent, const char *name, m
   else {
     // Log file creation
     if(not_exists) {
-      ino_t parent_sys_ino = scalar_inode(req, parent)->ino;
+      ino_t parent_sys_ino = inode_data(req, parent)->ino;
       log_create(parent_sys_ino, name, e.attr.st_ino);
     }
 
@@ -736,7 +716,7 @@ static void scalar_create(fuse_req_t req, fuse_ino_t parent, const char *name, m
 // If the datasync parameter is non-zero, then only the directory contents should be flushed, not the meta data.
 static void scalar_fsyncdir(fuse_req_t req, fuse_ino_t ino, int datasync, struct fuse_file_info *fi) {
   int res;
-  int fd = dirfd(scalar_dirp(fi)->dp);
+  int fd = dirfd(dir_data(fi)->dp);
   (void) ino;
   if (datasync)
     res = fdatasync(fd);
@@ -750,8 +730,6 @@ static void scalar_fsyncdir(fuse_req_t req, fuse_ino_t ino, int datasync, struct
 static void scalar_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
   int fd;
   char buf[64];
-  if (scalar_debug(req))
-    fprintf(stderr, "scalar_open(ino=%" PRIu64 ", flags=%d)\n", ino, fi->flags);
 
   sprintf(buf, "/proc/self/fd/%i", scalar_fd(req, ino));
   fd = open(buf, fi->flags & ~O_NOFOLLOW);
@@ -795,8 +773,6 @@ static void scalar_fsync(fuse_req_t req, fuse_ino_t ino, int datasync, struct fu
 // Read should send exactly the number of bytes requested except on EOF or error, otherwise the rest of the data will be substituted with zeroes
 static void scalar_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t offset, struct fuse_file_info *fi) {
   struct fuse_bufvec buf = FUSE_BUFVEC_INIT(size);
-  if (scalar_debug(req))
-    fprintf(stderr, "scalar_read(ino=%" PRIu64 ", size=%zd, ""off=%lu)\n", ino, size, (unsigned long) offset);
   buf.buf[0].flags = FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK;
   buf.buf[0].fd = fi->fh;
   buf.buf[0].pos = offset;
@@ -812,11 +788,9 @@ static void scalar_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec 
   out_buf.buf[0].flags = FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK;
   out_buf.buf[0].fd = fi->fh;
   out_buf.buf[0].pos = off;
-  if (scalar_debug(req))
-    fprintf(stderr, "scalar_write(ino=%" PRIu64 ", size=%zd, off=%lu)\n", ino, out_buf.buf[0].size, (unsigned long) off);
 
   // Log write
-  ino_t sys_ino = scalar_inode(req, ino)->ino;
+  ino_t sys_ino = inode_data(req, ino)->ino;
   log_write_buf(sys_ino, in_buf, off);
 
   res = fuse_buf_copy(&out_buf, in_buf, 0);
@@ -853,7 +827,7 @@ static void scalar_fallocate(fuse_req_t req, fuse_ino_t ino, int mode, off_t off
 
   err = posix_fallocate(fi->fh, offset, length);
   if(!err) {
-    ino_t sys_ino = scalar_inode(req, ino)->ino;
+    ino_t sys_ino = inode_data(req, ino)->ino;
     log_fallocate(sys_ino, attr.st_size, offset, length);
   }
 
@@ -873,13 +847,10 @@ static void scalar_flock(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
 static void scalar_getxattr(fuse_req_t req, fuse_ino_t ino, const char *name, size_t size) {
   char *value = NULL;
   char procname[64];
-  struct scalar_inode *inode = scalar_inode(req, ino);
+  struct inode_data *inode = inode_data(req, ino);
   ssize_t ret;
   int saverr;
   saverr = ENOSYS;
-  if (scalar_debug(req)) {
-    fprintf(stderr, "scalar_getxattr(ino=%" PRIu64 ", name=%s size=%zd)\n", ino, name, size);
-  }
   if (inode->is_symlink) {
     saverr = EPERM;
     goto out;
@@ -916,13 +887,10 @@ static void scalar_getxattr(fuse_req_t req, fuse_ino_t ino, const char *name, si
 static void scalar_listxattr(fuse_req_t req, fuse_ino_t ino, size_t size) {
   char *value = NULL;
   char procname[64];
-  struct scalar_inode *inode = scalar_inode(req, ino);
+  struct inode_data *inode = inode_data(req, ino);
   ssize_t ret;
   int saverr;
   saverr = ENOSYS;
-  if (scalar_debug(req)) {
-    fprintf(stderr, "scalar_listxattr(ino=%" PRIu64 ", size=%zd)\n", ino, size);
-  }
   if (inode->is_symlink) {
     saverr = EPERM;
     goto out;
@@ -958,13 +926,10 @@ static void scalar_listxattr(fuse_req_t req, fuse_ino_t ino, size_t size) {
 // Set an extended attribute
 static void scalar_setxattr(fuse_req_t req, fuse_ino_t ino, const char *name, const char *value, size_t size, int flags) {
   char procname[64];
-  struct scalar_inode *inode = scalar_inode(req, ino);
+  struct inode_data *inode = inode_data(req, ino);
   ssize_t ret;
   int saverr;
   saverr = ENOSYS;
-  if (scalar_debug(req)) {
-    fprintf(stderr, "scalar_setxattr(ino=%" PRIu64 ", name=%s value=%s size=%zd)\n", ino, name, value, size);
-  }
   if (inode->is_symlink) {
     saverr = EPERM;
     goto out;
@@ -998,7 +963,7 @@ static void scalar_setxattr(fuse_req_t req, fuse_ino_t ino, const char *name, co
   saverr = ret == -1 ? errno : 0;
 
   if(!saverr) {
-    ino_t sys_ino = scalar_inode(req, ino)->ino;
+    ino_t sys_ino = inode_data(req, ino)->ino;
     log_setxattr(sys_ino, name, old_value, value);
   }
   free(old_value);
@@ -1010,7 +975,7 @@ static void scalar_setxattr(fuse_req_t req, fuse_ino_t ino, const char *name, co
 // Remove an extended attribute
 static void scalar_removexattr(fuse_req_t req, fuse_ino_t ino, const char *name) {
   char procname[64];
-  struct scalar_inode *inode = scalar_inode(req, ino);
+  struct inode_data *inode = inode_data(req, ino);
   ssize_t ret;
   int saverr;
   saverr = ENOSYS;
@@ -1042,7 +1007,7 @@ static void scalar_removexattr(fuse_req_t req, fuse_ino_t ino, const char *name)
   saverr = ret == -1 ? errno : 0;
 
   if(!saverr) {
-    ino_t sys_ino = scalar_inode(req, ino)->ino;
+    ino_t sys_ino = inode_data(req, ino)->ino;
     log_removexattr(sys_ino, name, old_value);
   }
   free(old_value);
