@@ -35,13 +35,13 @@ static struct dir_data *dir_data(struct fuse_file_info *fi) {
 }
 
 struct inode_data {
-  struct inode_data *next; /* protected by scalar->mutex */
-  struct inode_data *prev; /* protected by scalar->mutex */
+  struct inode_data *next;
+  struct inode_data *prev;
   int fd;
   bool is_symlink;
   ino_t ino;
   dev_t dev;
-  uint64_t refcount; /* protected by scalar->mutex */
+  uint64_t refcount;
   char *parent;
 };
 
