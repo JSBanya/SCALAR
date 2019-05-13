@@ -53,8 +53,7 @@ struct inode_data root_inode =
   };
 
 // Get inode struct from fuse inode
-static struct inode_data *inode_data(fuse_req_t req, fuse_ino_t ino) {
-  (void) req;
+static struct inode_data *inode_data(fuse_ino_t ino) {
   if (ino == FUSE_ROOT_ID)
     return &root_inode;
   else
@@ -62,8 +61,8 @@ static struct inode_data *inode_data(fuse_req_t req, fuse_ino_t ino) {
 }
 
 // Get file descriptor for inode
-static int inode_fd(fuse_req_t req, fuse_ino_t ino) {
-  return inode_data(req, ino)->fd;
+static int inode_fd(fuse_ino_t ino) {
+  return inode_data(ino)->fd;
 }
 
 // Initialize filesystem
@@ -79,7 +78,7 @@ static void op_init(void *userdata, struct fuse_conn_info *conn) {
 static void op_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
   (void) fi;
   struct stat buf;
-  int res = fstatat(inode_fd(req, ino), "", &buf, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW);
+  int res = fstatat(inode_fd(ino), "", &buf, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW);
   if (res == -1)
     return (void) fuse_reply_err(req, errno);
   fuse_reply_attr(req, &buf, 0);
@@ -103,7 +102,7 @@ static int utimensat_empty_nofollow(struct inode_data *inode, const struct times
 static void op_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr, int to_set, struct fuse_file_info *fi) {
   int saverr;
   char procname[64];
-  struct inode_data *inode = inode_data(req, ino);
+  struct inode_data *inode = inode_data(ino);
   int ifd = inode->fd;
   int res;
 
@@ -119,7 +118,7 @@ static void op_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr, int to
   if (res == -1)
     goto out_err;
 
-  ino_t sys_ino = inode_data(req, ino)->ino;
+  ino_t sys_ino = inode_data(ino)->ino;
 
   // Set attributes based on to_set
   if (to_set & FUSE_SET_ATTR_MODE) {
@@ -239,7 +238,7 @@ static struct inode_data *find_inode(struct stat *st) {
 
 // Look up an inode by name and add it to the linked list of inodes (if its not already present)
 // Sets the attributes in e
-static int do_lookup(fuse_req_t req, fuse_ino_t parent, const char *name, struct fuse_entry_param *e) {
+static int do_lookup(fuse_ino_t parent, const char *name, struct fuse_entry_param *e) {
   int newfd;
   int res;
   int saverr;
@@ -247,7 +246,7 @@ static int do_lookup(fuse_req_t req, fuse_ino_t parent, const char *name, struct
   memset(e, 0, sizeof(*e));
   e->attr_timeout = 0;
   e->entry_timeout = 0;
-  newfd = openat(inode_fd(req, parent), name, O_PATH | O_NOFOLLOW); // Get file descriptor for file name
+  newfd = openat(inode_fd(parent), name, O_PATH | O_NOFOLLOW); // Get file descriptor for file name
   if (newfd == -1)
     goto out_err;
   res = fstatat(newfd, "", &e->attr, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW); // Get attributes for opened file
@@ -291,11 +290,11 @@ static void op_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) {
   struct fuse_entry_param e;
   int err;
 
-  err = do_lookup(req, parent, name, &e); // Populates e with attributes
+  err = do_lookup(parent, name, &e); // Populates e with attributes
   if (err)
     fuse_reply_err(req, err);
   else {
-    ino_t parent_sys_ino = inode_data(req, parent)->ino;
+    ino_t parent_sys_ino = inode_data(parent)->ino;
     log_lookup(parent_sys_ino, name, e.attr.st_ino);
     fuse_reply_entry(req, &e);
   }
@@ -320,8 +319,8 @@ static void unref_inode(struct inode_data *inode, uint64_t n) {
 }
 
 // Forget references to a single inode
-static void forget_one(fuse_req_t req, fuse_ino_t ino, uint64_t nlookup) {
-  struct inode_data *inode = inode_data(req, ino);
+static void forget_one(fuse_ino_t ino, uint64_t nlookup) {
+  struct inode_data *inode = inode_data(ino);
   unref_inode(inode, nlookup);
 }
 
@@ -330,7 +329,7 @@ static void mknod_symlink(fuse_req_t req, fuse_ino_t parent, const char *name, m
   int newfd = -1;
   int res;
   int saverr;
-  struct inode_data *dir = inode_data(req, parent);
+  struct inode_data *dir = inode_data(parent);
   struct fuse_entry_param e;
   saverr = ENOMEM;
   if (S_ISDIR(mode))
@@ -343,21 +342,21 @@ static void mknod_symlink(fuse_req_t req, fuse_ino_t parent, const char *name, m
   if (res == -1)
     goto out;
 
-  saverr = do_lookup(req, parent, name, &e);
+  saverr = do_lookup(parent, name, &e);
   if (saverr)
     goto out;
 
   // Log if successful
-  ino_t parent_sys_ino = inode_data(req, parent)->ino;
+  ino_t parent_sys_ino = inode_data(parent)->ino;
   if (S_ISDIR(mode)) {
     log_mkdir(parent_sys_ino, name, e.attr.st_ino);
   } else if(S_ISLNK(mode)) {
     // Get inode for symlink
     struct fuse_entry_param sym_e;
-    saverr = do_lookup(req, parent, link, &sym_e);
+    saverr = do_lookup(parent, link, &sym_e);
     if(saverr)
       goto out;
-    forget_one(req, sym_e.ino, 1);
+    forget_one(sym_e.ino, 1);
 
     log_symlink(parent_sys_ino, name, e.attr.st_ino, link, sym_e.attr.st_ino);
   } else {
@@ -406,14 +405,14 @@ static int linkat_empty_nofollow(struct inode_data *inode, int dfd, const char *
 // Create a hard link
 static void op_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t parent, const char *name) {
   int res;
-  struct inode_data *inode = inode_data(req, ino);
+  struct inode_data *inode = inode_data(ino);
   struct fuse_entry_param e;
   int saverr;
   memset(&e, 0, sizeof(struct fuse_entry_param));
   e.attr_timeout = 0;
   e.entry_timeout = 0;
 
-  res = linkat_empty_nofollow(inode, inode_fd(req, parent), name); // Create the hardlink
+  res = linkat_empty_nofollow(inode, inode_fd(parent), name); // Create the hardlink
   if (res == -1)
     goto out_err;
 
@@ -424,7 +423,7 @@ static void op_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t parent, const cha
   inode->refcount++;
   e.ino = (uintptr_t) inode;
 
-  ino_t parent_sys_ino = inode_data(req, parent)->ino;
+  ino_t parent_sys_ino = inode_data(parent)->ino;
   log_link(parent_sys_ino, name, e.attr.st_ino);
 
   fuse_reply_entry(req, &e);
@@ -436,11 +435,11 @@ static void op_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t parent, const cha
 
 // Remove a directory
 static void op_rmdir(fuse_req_t req, fuse_ino_t parent, const char *name) {
-  int res = unlinkat(inode_fd(req, parent), name, AT_REMOVEDIR);
+  int res = unlinkat(inode_fd(parent), name, AT_REMOVEDIR);
   if(res != -1) {
     // Log if successful
     // There is no point in logging the inode on directory removal so we purposefully avoid doing so
-    ino_t parent_sys_ino = inode_data(req, parent)->ino;
+    ino_t parent_sys_ino = inode_data(parent)->ino;
     log_rmdir(parent_sys_ino, name);
     fuse_reply_err(req, 0);
   } else
@@ -456,17 +455,17 @@ static void op_rename(fuse_req_t req, fuse_ino_t parent, const char *name, fuse_
 
   // Lookup file to get inode for logging
   struct fuse_entry_param e;
-  int err = do_lookup(req, parent, name, &e);
+  int err = do_lookup(parent, name, &e);
   if (err)
     fuse_reply_err(req, err);
-  forget_one(req, e.ino, 1);
+  forget_one(e.ino, 1);
 
   // Rename
-  int res = renameat(inode_fd(req, parent), name, inode_fd(req, newparent), newname);
+  int res = renameat(inode_fd(parent), name, inode_fd(newparent), newname);
   if(res != -1) {
     // Log only if success
-    ino_t parent_sys_ino = inode_data(req, parent)->ino;
-    ino_t new_parent_sys_ino = inode_data(req, newparent)->ino;
+    ino_t parent_sys_ino = inode_data(parent)->ino;
+    ino_t new_parent_sys_ino = inode_data(newparent)->ino;
     log_rename(parent_sys_ino, name, new_parent_sys_ino, newname, e.attr.st_ino);
     fuse_reply_err(req, 0);
   } else {
@@ -476,14 +475,14 @@ static void op_rename(fuse_req_t req, fuse_ino_t parent, const char *name, fuse_
 
 // Remove a file
 static void op_unlink(fuse_req_t req, fuse_ino_t parent, const char *name) { 
-  int parent_fd = inode_fd(req, parent);
+  int parent_fd = inode_fd(parent);
 
   // Get contents
   struct fuse_entry_param e;
-  int res = do_lookup(req, parent, name, &e);
+  int res = do_lookup(parent, name, &e);
   if (res)
     goto out_err;
-  forget_one(req, e.ino, 1);
+  forget_one(e.ino, 1);
 
   // Get file contents
   ssize_t file_size = e.attr.st_size;
@@ -504,7 +503,7 @@ static void op_unlink(fuse_req_t req, fuse_ino_t parent, const char *name) {
   res = unlinkat(parent_fd, name, 0);
   if(res != -1) {
     // Log if successful
-    ino_t parent_sys_ino = inode_data(req, parent)->ino;
+    ino_t parent_sys_ino = inode_data(parent)->ino;
 
     log_unlink(parent_sys_ino, e.attr.st_ino, name, content);
     fuse_reply_err(req, 0);
@@ -520,7 +519,7 @@ static void op_unlink(fuse_req_t req, fuse_ino_t parent, const char *name) {
 // The inode's lookup count increases by one for every call to fuse_reply_entry and fuse_reply_create 
 // The nlookup parameter indicates by how much the lookup count should be decreased.
 static void op_forget(fuse_req_t req, fuse_ino_t ino, uint64_t nlookup) {
-  forget_one(req, ino, nlookup);
+  forget_one(ino, nlookup);
   fuse_reply_none(req);
 }
 
@@ -528,14 +527,14 @@ static void op_forget(fuse_req_t req, fuse_ino_t ino, uint64_t nlookup) {
 // See description of the forget function for more information
 static void op_forget_multi(fuse_req_t req, size_t count, struct fuse_forget_data *forgets) {
   for (size_t i = 0; i < count; ++i)
-    forget_one(req, forgets[i].ino, forgets[i].nlookup);
+    forget_one(forgets[i].ino, forgets[i].nlookup);
   fuse_reply_none(req);
 }
 
 // Read symbolic link
 static void op_readlink(fuse_req_t req, fuse_ino_t ino) {
   char buf[PATH_MAX + 1];
-  int res = readlinkat(inode_fd(req, ino), "", buf, sizeof(buf));
+  int res = readlinkat(inode_fd(ino), "", buf, sizeof(buf));
   if (res == -1)
     return (void) fuse_reply_err(req, errno);
   if (res == sizeof(buf))
@@ -550,7 +549,7 @@ static void op_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi
   struct dir_data *d = calloc(1, sizeof(struct dir_data));
   if (d == NULL)
     goto out_err;
-  d->fd = openat(inode_fd(req, ino), ".", O_RDONLY);
+  d->fd = openat(inode_fd(ino), ".", O_RDONLY);
   if (d->fd == -1)
     goto out_errno;
   d->dp = fdopendir(d->fd);
@@ -623,7 +622,7 @@ static void do_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t offset
            .attr.st_mode = d->entry->d_type << 12,
           };
       } else {
-        err = do_lookup(req, ino, name, &e);
+        err = do_lookup(ino, name, &e);
         if (err)
           goto error;
         entry_ino = e.ino;
@@ -639,7 +638,7 @@ static void do_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t offset
     }
     if (entsize > rem) {
       if (entry_ino != 0) 
-        forget_one(req, entry_ino, 1);
+        forget_one(entry_ino, 1);
       break;
     }
     
@@ -690,22 +689,22 @@ static void op_create(fuse_req_t req, fuse_ino_t parent, const char *name, mode_
   int err;
 
   // Test for file existence (to log only creates)
-  int not_exists = faccessat(inode_fd(req, parent), name, F_OK, AT_EACCESS | AT_SYMLINK_NOFOLLOW);
+  int not_exists = faccessat(inode_fd(parent), name, F_OK, AT_EACCESS | AT_SYMLINK_NOFOLLOW);
 
   // Open/create file
-  fd = openat(inode_fd(req, parent), name, (fi->flags | O_CREAT) & ~O_NOFOLLOW, mode);
+  fd = openat(inode_fd(parent), name, (fi->flags | O_CREAT) & ~O_NOFOLLOW, mode);
   if (fd == -1)
     return (void) fuse_reply_err(req, errno);
   fi->fh = fd;
   fi->direct_io = 1;
-  err = do_lookup(req, parent, name, &e);
+  err = do_lookup(parent, name, &e);
 
   if (err)
     fuse_reply_err(req, err);
   else {
     // Log file creation
     if(not_exists) {
-      ino_t parent_sys_ino = inode_data(req, parent)->ino;
+      ino_t parent_sys_ino = inode_data(parent)->ino;
       log_create(parent_sys_ino, name, e.attr.st_ino);
     }
 
@@ -733,7 +732,7 @@ static void op_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
   int fd;
   char buf[64];
 
-  sprintf(buf, "/proc/self/fd/%i", inode_fd(req, ino));
+  sprintf(buf, "/proc/self/fd/%i", inode_fd(ino));
   fd = open(buf, fi->flags & ~O_NOFOLLOW);
   if (fd == -1)
     return (void) fuse_reply_err(req, errno);
@@ -793,7 +792,7 @@ static void op_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec *in_
   out_buf.buf[0].pos = off;
 
   // Log write
-  ino_t sys_ino = inode_data(req, ino)->ino;
+  ino_t sys_ino = inode_data(ino)->ino;
   log_write_buf(sys_ino, in_buf, off);
 
   res = fuse_buf_copy(&out_buf, in_buf, 0);
@@ -806,7 +805,7 @@ static void op_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec *in_
 // Get file system statistics
 static void op_statfs(fuse_req_t req, fuse_ino_t ino) {
   struct statvfs stbuf;
-  int res = fstatvfs(inode_fd(req, ino), &stbuf);
+  int res = fstatvfs(inode_fd(ino), &stbuf);
   if (res == -1)
     fuse_reply_err(req, errno);
   else
@@ -830,7 +829,7 @@ static void op_fallocate(fuse_req_t req, fuse_ino_t ino, int mode, off_t offset,
 
   err = posix_fallocate(fi->fh, offset, length);
   if(!err) {
-    ino_t sys_ino = inode_data(req, ino)->ino;
+    ino_t sys_ino = inode_data(ino)->ino;
     log_fallocate(sys_ino, attr.st_size, offset, length);
   }
 
@@ -850,7 +849,7 @@ static void op_flock(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi, 
 static void op_getxattr(fuse_req_t req, fuse_ino_t ino, const char *name, size_t size) {
   char *value = NULL;
   char procname[64];
-  struct inode_data *inode = inode_data(req, ino);
+  struct inode_data *inode = inode_data(ino);
   ssize_t ret;
   int saverr;
   saverr = ENOSYS;
@@ -890,7 +889,7 @@ static void op_getxattr(fuse_req_t req, fuse_ino_t ino, const char *name, size_t
 static void op_listxattr(fuse_req_t req, fuse_ino_t ino, size_t size) {
   char *value = NULL;
   char procname[64];
-  struct inode_data *inode = inode_data(req, ino);
+  struct inode_data *inode = inode_data(ino);
   ssize_t ret;
   int saverr;
   saverr = ENOSYS;
@@ -929,7 +928,7 @@ static void op_listxattr(fuse_req_t req, fuse_ino_t ino, size_t size) {
 // Set an extended attribute
 static void op_setxattr(fuse_req_t req, fuse_ino_t ino, const char *name, const char *value, size_t size, int flags) {
   char procname[64];
-  struct inode_data *inode = inode_data(req, ino);
+  struct inode_data *inode = inode_data(ino);
   ssize_t ret;
   int saverr;
   saverr = ENOSYS;
@@ -966,7 +965,7 @@ static void op_setxattr(fuse_req_t req, fuse_ino_t ino, const char *name, const 
   saverr = ret == -1 ? errno : 0;
 
   if(!saverr) {
-    ino_t sys_ino = inode_data(req, ino)->ino;
+    ino_t sys_ino = inode_data(ino)->ino;
     log_setxattr(sys_ino, name, old_value, value);
   }
   free(old_value);
@@ -978,7 +977,7 @@ static void op_setxattr(fuse_req_t req, fuse_ino_t ino, const char *name, const 
 // Remove an extended attribute
 static void op_removexattr(fuse_req_t req, fuse_ino_t ino, const char *name) {
   char procname[64];
-  struct inode_data *inode = inode_data(req, ino);
+  struct inode_data *inode = inode_data(ino);
   ssize_t ret;
   int saverr;
   saverr = ENOSYS;
@@ -1010,7 +1009,7 @@ static void op_removexattr(fuse_req_t req, fuse_ino_t ino, const char *name) {
   saverr = ret == -1 ? errno : 0;
 
   if(!saverr) {
-    ino_t sys_ino = inode_data(req, ino)->ino;
+    ino_t sys_ino = inode_data(ino)->ino;
     log_removexattr(sys_ino, name, old_value);
   }
   free(old_value);
