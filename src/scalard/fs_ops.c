@@ -761,7 +761,7 @@ static void op_release(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi
 // Since file descriptors can be duplicated (dup, dup2, fork), for one open call there may be many flush calls
 static void op_flush(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
   (void) ino;
-  int res = close(dup(fi->fh));
+  int res = close(fcntl(fi->fh, F_DUPFD_CLOEXEC));
   fuse_reply_err(req, res == -1 ? errno : 0);
 }
 
