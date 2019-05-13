@@ -158,7 +158,7 @@ static void op_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr, int to
       // The fd provided by fi->fh is opened with O_PATH, and thus unreadable
       // We must open the file manually with read permissions to get the data lost
       sprintf(procname, "/proc/self/fd/%i", ifd);
-      int fd = open(procname, O_RDONLY);
+      int fd = open(procname, O_RDONLY | O_CLOEXEC);
 
       long cur = lseek(fd, 0, SEEK_CUR);
       lseek(fd, attr->st_size, SEEK_SET);
@@ -249,7 +249,7 @@ static int do_lookup(fuse_ino_t parent, const char *name, struct fuse_entry_para
   memset(e, 0, sizeof(*e));
   e->attr_timeout = 0;
   e->entry_timeout = 0;
-  newfd = openat(inode_fd(parent), name, O_PATH | O_NOFOLLOW); // Get file descriptor for file name
+  newfd = openat(inode_fd(parent), name, O_PATH | O_NOFOLLOW | O_CLOEXEC); // Get file descriptor for file name
   if (newfd == -1)
     goto out_err;
   res = fstatat(newfd, "", &e->attr, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW); // Get attributes for opened file
@@ -494,7 +494,7 @@ static void op_unlink(fuse_req_t req, fuse_ino_t parent, const char *name) {
   ssize_t file_size = e.attr.st_size;
   char *content = malloc(file_size+1);
 
-  int fd = openat(parent_fd, name, O_RDONLY);
+  int fd = openat(parent_fd, name, O_RDONLY | O_CLOEXEC);
   lseek(fd, 0, SEEK_SET);
   ssize_t bytes_read = read(fd, content, file_size);
   content[file_size] = '\0';
@@ -555,7 +555,7 @@ static void op_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi
   struct dir_data *d = calloc(1, sizeof(struct dir_data));
   if (d == NULL)
     goto out_err;
-  d->fd = openat(inode_fd(ino), ".", O_RDONLY);
+  d->fd = openat(inode_fd(ino), ".", O_RDONLY | O_CLOEXEC);
   if (d->fd == -1)
     goto out_errno;
   d->dp = fdopendir(d->fd);
@@ -698,7 +698,7 @@ static void op_create(fuse_req_t req, fuse_ino_t parent, const char *name, mode_
   int not_exists = faccessat(inode_fd(parent), name, F_OK, AT_EACCESS | AT_SYMLINK_NOFOLLOW);
 
   // Open/create file
-  fd = openat(inode_fd(parent), name, (fi->flags | O_CREAT) & ~O_NOFOLLOW, mode);
+  fd = openat(inode_fd(parent), name, (fi->flags | O_CREAT | O_CLOEXEC) & ~O_NOFOLLOW, mode);
   if (fd == -1)
     return (void) fuse_reply_err(req, errno);
   fi->fh = fd;
@@ -739,7 +739,7 @@ static void op_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
   char buf[64];
 
   sprintf(buf, "/proc/self/fd/%i", inode_fd(ino));
-  fd = open(buf, fi->flags & ~O_NOFOLLOW);
+  fd = open(buf, (fi->flags | O_CLOEXEC) & ~O_NOFOLLOW);
   if (fd == -1)
     return (void) fuse_reply_err(req, errno);
   fi->fh = fd;
@@ -1064,6 +1064,6 @@ const struct fuse_lowlevel_ops fs_ops =
 const struct fuse_lowlevel_ops *fs_ops_p = &fs_ops;
 
 void fs_ops_init() {
-  if ((root_inode.fd = open("/", O_PATH)) < 0)
+  if ((root_inode.fd = open("/", O_PATH | O_CLOEXEC)) < 0)
     err(EXIT_FAILURE, "open(/)");
 }
