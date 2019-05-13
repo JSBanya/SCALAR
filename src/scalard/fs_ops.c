@@ -46,7 +46,6 @@ struct inode_data {
   ino_t ino;
   dev_t dev;
   uint64_t refcount;
-  char *parent;
 };
 
 struct inode_data root_inode =
