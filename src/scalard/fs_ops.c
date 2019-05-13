@@ -42,7 +42,6 @@ struct inode_data {
   struct inode_data *prev;
   uint64_t generation;
   int fd;
-  bool is_symlink;
   ino_t ino;
   dev_t dev;
   uint64_t refcount;
@@ -51,8 +50,7 @@ struct inode_data {
 struct inode_data root_inode =
   {
    .next = &root_inode, .prev = &root_inode,
-   .fd = -1, .refcount = 2,
-   .is_symlink = false
+   .fd = -1, .refcount = 2
   };
 
 // Get inode struct from fuse inode
@@ -88,17 +86,7 @@ static void op_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi
 }
 
 static int utimensat_empty_nofollow(struct inode_data *inode, const struct timespec *tv) {
-  int res;
-  char procname[64];
-  if (inode->is_symlink) {
-    res = utimensat(inode->fd, "", tv, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW);
-    if (res == -1 && errno == EINVAL) {
-      errno = EPERM;
-    }
-    return res;
-  }
-  sprintf(procname, "/proc/self/fd/%i", inode->fd);
-  return utimensat(AT_FDCWD, procname, tv, 0);
+  return utimensat(inode->fd, "", tv, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW) == -1;
 }
 
 // Set file attributes
@@ -269,7 +257,6 @@ static int do_lookup(fuse_ino_t parent, const char *name, struct fuse_entry_para
       goto out_err;
     inode->generation =
       atomic_fetch_add_explicit(&current_generation, 1, memory_order_relaxed);
-    inode->is_symlink = S_ISLNK(e->attr.st_mode);
     inode->refcount = 1;
     inode->fd = newfd;
     inode->ino = e->attr.st_ino;
@@ -395,17 +382,7 @@ static void op_symlink(fuse_req_t req, const char *link, fuse_ino_t parent, cons
 
 // Helper function for op_link
 static int linkat_empty_nofollow(struct inode_data *inode, int dfd, const char *name) {
-  int res;
-  char procname[64];
-  if (inode->is_symlink) {
-    res = linkat(inode->fd, "", dfd, name, AT_EMPTY_PATH);
-    if (res == -1 && (errno == ENOENT || errno == EINVAL)) {
-      errno = EPERM;
-    }
-    return res;
-  }
-  sprintf(procname, "/proc/self/fd/%i", inode->fd);
-  return linkat(AT_FDCWD, procname, dfd, name, AT_SYMLINK_FOLLOW);
+  return linkat(inode->fd, "", dfd, name, AT_EMPTY_PATH);
 }
 
 // Create a hard link
@@ -854,21 +831,15 @@ static void op_flock(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi, 
 // Get an extended attribute by name
 static void op_getxattr(fuse_req_t req, fuse_ino_t ino, const char *name, size_t size) {
   char *value = NULL;
-  char procname[64];
   struct inode_data *inode = inode_data(ino);
   ssize_t ret;
   int saverr;
   saverr = ENOSYS;
-  if (inode->is_symlink) {
-    saverr = EPERM;
-    goto out;
-  }
-  sprintf(procname, "/proc/self/fd/%i", inode->fd);
   if (size) {
     value = malloc(size);
     if (!value)
       goto out_err;
-    ret = getxattr(procname, name, value, size);
+    ret = fgetxattr(inode->fd, name, value, size);
     if (ret == -1)
       goto out_err;
     saverr = 0;
@@ -876,7 +847,7 @@ static void op_getxattr(fuse_req_t req, fuse_ino_t ino, const char *name, size_t
       goto out;
     fuse_reply_buf(req, value, ret);
   } else {
-    ret = getxattr(procname, name, NULL, 0);
+    ret = fgetxattr(inode->fd, name, NULL, 0);
     if (ret == -1)
       goto out_err;
     fuse_reply_xattr(req, ret);
@@ -894,21 +865,15 @@ static void op_getxattr(fuse_req_t req, fuse_ino_t ino, const char *name, size_t
 // List extended attribute names
 static void op_listxattr(fuse_req_t req, fuse_ino_t ino, size_t size) {
   char *value = NULL;
-  char procname[64];
   struct inode_data *inode = inode_data(ino);
   ssize_t ret;
   int saverr;
   saverr = ENOSYS;
-  if (inode->is_symlink) {
-    saverr = EPERM;
-    goto out;
-  }
-  sprintf(procname, "/proc/self/fd/%i", inode->fd);
   if (size) {
     value = malloc(size);
     if (!value)
       goto out_err;
-    ret = listxattr(procname, value, size);
+    ret = flistxattr(inode->fd, value, size);
     if (ret == -1)
       goto out_err;
     saverr = 0;
@@ -916,7 +881,7 @@ static void op_listxattr(fuse_req_t req, fuse_ino_t ino, size_t size) {
       goto out;
     fuse_reply_buf(req, value, ret);
   } else {
-    ret = listxattr(procname, NULL, 0);
+    ret = flistxattr(inode->fd, NULL, 0);
     if (ret == -1)
       goto out_err;
     fuse_reply_xattr(req, ret);
@@ -933,19 +898,13 @@ static void op_listxattr(fuse_req_t req, fuse_ino_t ino, size_t size) {
 
 // Set an extended attribute
 static void op_setxattr(fuse_req_t req, fuse_ino_t ino, const char *name, const char *value, size_t size, int flags) {
-  char procname[64];
   struct inode_data *inode = inode_data(ino);
   ssize_t ret;
   int saverr;
   saverr = ENOSYS;
-  if (inode->is_symlink) {
-    saverr = EPERM;
-    goto out;
-  }
-  sprintf(procname, "/proc/self/fd/%i", inode->fd);
 
   // Get old value if it exists
-  ssize_t xattr_size = getxattr(procname, name, 0, 0);
+  ssize_t xattr_size = fgetxattr(inode->fd, name, 0, 0);
   char *old_value;
   if(xattr_size == -1) {
     if(errno != ENODATA) {
@@ -957,7 +916,7 @@ static void op_setxattr(fuse_req_t req, fuse_ino_t ino, const char *name, const 
     old_value[0] = '\0';
   } else {
     old_value = malloc(xattr_size+1);
-    ssize_t xattr_size_read = getxattr(procname, name, old_value, xattr_size);
+    ssize_t xattr_size_read = fgetxattr(inode->fd, name, old_value, xattr_size);
     old_value[xattr_size] = '\0';
 
     if(xattr_size_read != xattr_size) {
@@ -967,7 +926,7 @@ static void op_setxattr(fuse_req_t req, fuse_ino_t ino, const char *name, const 
     }
   }
 
-  ret = setxattr(procname, name, value, size, flags);
+  ret = fsetxattr(inode->fd, name, value, size, flags);
   saverr = ret == -1 ? errno : 0;
 
   if(!saverr) {
@@ -982,27 +941,20 @@ static void op_setxattr(fuse_req_t req, fuse_ino_t ino, const char *name, const 
 
 // Remove an extended attribute
 static void op_removexattr(fuse_req_t req, fuse_ino_t ino, const char *name) {
-  char procname[64];
   struct inode_data *inode = inode_data(ino);
   ssize_t ret;
   int saverr;
   saverr = ENOSYS;
 
-  if (inode->is_symlink) {
-    saverr = EPERM;
-    goto out;
-  }
-  sprintf(procname, "/proc/self/fd/%i", inode->fd);
-
   // Get old value
-  ssize_t xattr_size = getxattr(procname, name, 0, 0);
+  ssize_t xattr_size = fgetxattr(inode->fd, name, 0, 0);
   if(xattr_size == -1) {
     saverr = errno;
     goto out;
   } 
 
   char *old_value = malloc(xattr_size+1);
-  ssize_t xattr_size_read = getxattr(procname, name, old_value, xattr_size);
+  ssize_t xattr_size_read = fgetxattr(inode->fd, name, old_value, xattr_size);
   old_value[xattr_size] = '\0';
 
   if(xattr_size_read != xattr_size) {
@@ -1011,7 +963,7 @@ static void op_removexattr(fuse_req_t req, fuse_ino_t ino, const char *name) {
     goto out;
   }
 
-  ret = removexattr(procname, name);
+  ret = fremovexattr(inode->fd, name);
   saverr = ret == -1 ? errno : 0;
 
   if(!saverr) {
