@@ -2,7 +2,7 @@
 
 void print_hex(const char *string) {
 	unsigned char *p = (unsigned char *) string;
-	for (int i = 0; i < strlen(string); i++) {
+	for (size_t i = 0; i < strlen(string); i++) {
 	    printf("0x%02x ", p[i]);
 	}
 	fflush(stdout);

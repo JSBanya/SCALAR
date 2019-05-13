@@ -54,7 +54,7 @@ static int conn_read(void *arg) {
       .msg_control = &u.cbuf, .msg_controllen = sizeof(u.cbuf) };
 
  retry_read:
-  if ((buf_len = recvmsg(data->fd, &msghdr, MSG_CMSG_CLOEXEC)) == -1) {
+  if ((buf_len = recvmsg(data->fd, &msghdr, MSG_CMSG_CLOEXEC)) < 0) {
     if (errno == EINTR)
       goto retry_read;
     warn("recvmsg");
@@ -78,7 +78,7 @@ static int conn_read(void *arg) {
     }
   }
 
-  while (buf_pos < buf_len) {
+  while (buf_pos < (size_t) buf_len) {
     if (data->str_len == 0 && data->argv[data->argv_pos] != NULL) {
       if (++data->argv_pos >= data->argv_len) {
         char **new_argv;
@@ -98,7 +98,7 @@ static int conn_read(void *arg) {
       }
     } else {
       char *end = memchr(buf + buf_pos, '\0', buf_len - buf_pos);
-      size_t len = end == NULL ? buf_len - buf_pos : end - (buf + buf_pos) + 1;
+      size_t len = end == NULL ? (size_t) buf_len - buf_pos : (size_t) (end - (buf + buf_pos)) + 1;
       char *new_str;
 
       if ((new_str =

@@ -28,7 +28,7 @@ static void daemon_init(void) {
   event_loop();
 }
 
-int main(int argc, char *argv[]) {
+int main(int argc, char *argv[argc]) {
   if (argv[0] && strcmp(argv[0], "__init") == 0)
     child_init(argv);
   else

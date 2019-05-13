@@ -54,6 +54,7 @@ struct inode_data root_inode =
 
 // Get inode struct from fuse inode
 static struct inode_data *inode_data(fuse_req_t req, fuse_ino_t ino) {
+  (void) req;
   if (ino == FUSE_ROOT_ID)
     return &root_inode;
   else
@@ -68,6 +69,7 @@ static int inode_fd(fuse_req_t req, fuse_ino_t ino) {
 // Initialize filesystem
 // This function is called when libfuse establishes communication with the FUSE kernel module
 static void op_init(void *userdata, struct fuse_conn_info *conn) {
+  (void) userdata;
   conn->want |=
     (conn->capable & FUSE_CAP_EXPORT_SUPPORT) |
     (conn->capable & FUSE_CAP_FLOCK_LOCKS);
@@ -525,7 +527,7 @@ static void op_forget(fuse_req_t req, fuse_ino_t ino, uint64_t nlookup) {
 // Forget about multiple inodes
 // See description of the forget function for more information
 static void op_forget_multi(fuse_req_t req, size_t count, struct fuse_forget_data *forgets) {
-  for (int i = 0; i < count; i++)
+  for (size_t i = 0; i < count; ++i)
     forget_one(req, forgets[i].ino, forgets[i].nlookup);
   fuse_reply_none(req);
 }
@@ -772,6 +774,7 @@ static void op_fsync(fuse_req_t req, fuse_ino_t ino, int datasync, struct fuse_f
 // Read data
 // Read should send exactly the number of bytes requested except on EOF or error, otherwise the rest of the data will be substituted with zeroes
 static void op_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t offset, struct fuse_file_info *fi) {
+  (void) ino;
   struct fuse_bufvec buf = FUSE_BUFVEC_INIT(size);
   buf.buf[0].flags = FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK;
   buf.buf[0].fd = fi->fh;
