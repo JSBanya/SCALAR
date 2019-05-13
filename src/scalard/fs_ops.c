@@ -45,9 +45,9 @@ struct inode_data {
   char *parent;
 };
 
-struct inode_data scalar_root =
+struct inode_data root_inode =
   {
-   .next = &scalar_root, .prev = &scalar_root,
+   .next = &root_inode, .prev = &root_inode,
    .fd = -1, .refcount = 2,
    .is_symlink = false
   };
@@ -55,29 +55,29 @@ struct inode_data scalar_root =
 // Get inode struct from fuse inode
 static struct inode_data *inode_data(fuse_req_t req, fuse_ino_t ino) {
   if (ino == FUSE_ROOT_ID)
-    return &scalar_root;
+    return &root_inode;
   else
     return (struct inode_data *) (uintptr_t) ino;
 }
 
 // Get file descriptor for inode
-static int scalar_fd(fuse_req_t req, fuse_ino_t ino) {
+static int inode_fd(fuse_req_t req, fuse_ino_t ino) {
   return inode_data(req, ino)->fd;
 }
 
 // Initialize filesystem
 // This function is called when libfuse establishes communication with the FUSE kernel module
-static void scalar_init(void *userdata, struct fuse_conn_info *conn) {
+static void op_init(void *userdata, struct fuse_conn_info *conn) {
   conn->want |=
     (conn->capable & FUSE_CAP_EXPORT_SUPPORT) |
     (conn->capable & FUSE_CAP_FLOCK_LOCKS);
 }
 
 // Get file attributes
-static void scalar_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
+static void op_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
   (void) fi;
   struct stat buf;
-  int res = fstatat(scalar_fd(req, ino), "", &buf, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW);
+  int res = fstatat(inode_fd(req, ino), "", &buf, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW);
   if (res == -1)
     return (void) fuse_reply_err(req, errno);
   fuse_reply_attr(req, &buf, 0);
@@ -98,7 +98,7 @@ static int utimensat_empty_nofollow(struct inode_data *inode, const struct times
 }
 
 // Set file attributes
-static void scalar_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr, int to_set, struct fuse_file_info *fi) {
+static void op_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr, int to_set, struct fuse_file_info *fi) {
   int saverr;
   char procname[64];
   struct inode_data *inode = inode_data(req, ino);
@@ -214,17 +214,17 @@ static void scalar_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr, in
       goto out_err;
   }
 
-  return scalar_getattr(req, ino, fi);
+  return op_getattr(req, ino, fi);
  out_err:
   saverr = errno;
   fuse_reply_err(req, saverr);
 }
 
 // Find inode in the linked list of inodes
-static struct inode_data *scalar_find(struct stat *st) {
+static struct inode_data *find_inode(struct stat *st) {
   struct inode_data *p;
   struct inode_data *ret = NULL;
-  for (p = scalar_root.next; p != &scalar_root; p = p->next) {
+  for (p = root_inode.next; p != &root_inode; p = p->next) {
     if (p->ino == st->st_ino && p->dev == st->st_dev) {
       assert(p->refcount > 0);
       ret = p;
@@ -237,7 +237,7 @@ static struct inode_data *scalar_find(struct stat *st) {
 
 // Look up an inode by name and add it to the linked list of inodes (if its not already present)
 // Sets the attributes in e
-static int scalar_do_lookup(fuse_req_t req, fuse_ino_t parent, const char *name, struct fuse_entry_param *e) {
+static int do_lookup(fuse_req_t req, fuse_ino_t parent, const char *name, struct fuse_entry_param *e) {
   int newfd;
   int res;
   int saverr;
@@ -245,13 +245,13 @@ static int scalar_do_lookup(fuse_req_t req, fuse_ino_t parent, const char *name,
   memset(e, 0, sizeof(*e));
   e->attr_timeout = 0;
   e->entry_timeout = 0;
-  newfd = openat(scalar_fd(req, parent), name, O_PATH | O_NOFOLLOW); // Get file descriptor for file name
+  newfd = openat(inode_fd(req, parent), name, O_PATH | O_NOFOLLOW); // Get file descriptor for file name
   if (newfd == -1)
     goto out_err;
   res = fstatat(newfd, "", &e->attr, AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW); // Get attributes for opened file
   if (res == -1)
     goto out_err;
-  inode = scalar_find(&e->attr); // Find if inode exists in linked list
+  inode = find_inode(&e->attr); // Find if inode exists in linked list
   if (inode) {
     // Inode already exists in the linked list
     close(newfd);
@@ -268,7 +268,7 @@ static int scalar_do_lookup(fuse_req_t req, fuse_ino_t parent, const char *name,
     inode->fd = newfd;
     inode->ino = e->attr.st_ino;
     inode->dev = e->attr.st_dev;
-    prev = &scalar_root;
+    prev = &root_inode;
     next = prev->next;
     next->prev = inode;
     inode->next = next;
@@ -285,11 +285,11 @@ static int scalar_do_lookup(fuse_req_t req, fuse_ino_t parent, const char *name,
 }
 
 // Look up a directory entry by name and get its attributes
-static void scalar_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) {
+static void op_lookup(fuse_req_t req, fuse_ino_t parent, const char *name) {
   struct fuse_entry_param e;
   int err;
 
-  err = scalar_do_lookup(req, parent, name, &e); // Populates e with attributes
+  err = do_lookup(req, parent, name, &e); // Populates e with attributes
   if (err)
     fuse_reply_err(req, err);
   else {
@@ -318,13 +318,13 @@ static void unref_inode(struct inode_data *inode, uint64_t n) {
 }
 
 // Forget references to a single inode
-static void scalar_forget_one(fuse_req_t req, fuse_ino_t ino, uint64_t nlookup) {
+static void forget_one(fuse_req_t req, fuse_ino_t ino, uint64_t nlookup) {
   struct inode_data *inode = inode_data(req, ino);
   unref_inode(inode, nlookup);
 }
 
 // Helper function to encapsulate similar functionality of mknod, mkdir, and symlink into one function
-static void scalar_mknod_symlink(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode, dev_t rdev, const char *link) {
+static void mknod_symlink(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode, dev_t rdev, const char *link) {
   int newfd = -1;
   int res;
   int saverr;
@@ -341,7 +341,7 @@ static void scalar_mknod_symlink(fuse_req_t req, fuse_ino_t parent, const char *
   if (res == -1)
     goto out;
 
-  saverr = scalar_do_lookup(req, parent, name, &e);
+  saverr = do_lookup(req, parent, name, &e);
   if (saverr)
     goto out;
 
@@ -352,10 +352,10 @@ static void scalar_mknod_symlink(fuse_req_t req, fuse_ino_t parent, const char *
   } else if(S_ISLNK(mode)) {
     // Get inode for symlink
     struct fuse_entry_param sym_e;
-    saverr = scalar_do_lookup(req, parent, link, &sym_e);
+    saverr = do_lookup(req, parent, link, &sym_e);
     if(saverr)
       goto out;
-    scalar_forget_one(req, sym_e.ino, 1);
+    forget_one(req, sym_e.ino, 1);
 
     log_symlink(parent_sys_ino, name, e.attr.st_ino, link, sym_e.attr.st_ino);
   } else {
@@ -372,21 +372,21 @@ static void scalar_mknod_symlink(fuse_req_t req, fuse_ino_t parent, const char *
 }
 
 // Create file node by name
-static void scalar_mknod(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode, dev_t rdev) {
-  scalar_mknod_symlink(req, parent, name, mode, rdev, NULL);
+static void op_mknod(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode, dev_t rdev) {
+  mknod_symlink(req, parent, name, mode, rdev, NULL);
 }
 
 // Create a directory by name
-static void scalar_mkdir(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode) {
-  scalar_mknod_symlink(req, parent, name, S_IFDIR | mode, 0, NULL);
+static void op_mkdir(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode) {
+  mknod_symlink(req, parent, name, S_IFDIR | mode, 0, NULL);
 }
 
 // Create a symbolic link
-static void scalar_symlink(fuse_req_t req, const char *link, fuse_ino_t parent, const char *name) {
-  scalar_mknod_symlink(req, parent, name, S_IFLNK, 0, link);
+static void op_symlink(fuse_req_t req, const char *link, fuse_ino_t parent, const char *name) {
+  mknod_symlink(req, parent, name, S_IFLNK, 0, link);
 }
 
-// Helper function for scalar_link
+// Helper function for op_link
 static int linkat_empty_nofollow(struct inode_data *inode, int dfd, const char *name) {
   int res;
   char procname[64];
@@ -402,7 +402,7 @@ static int linkat_empty_nofollow(struct inode_data *inode, int dfd, const char *
 }
 
 // Create a hard link
-static void scalar_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t parent, const char *name) {
+static void op_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t parent, const char *name) {
   int res;
   struct inode_data *inode = inode_data(req, ino);
   struct fuse_entry_param e;
@@ -411,7 +411,7 @@ static void scalar_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t parent, const
   e.attr_timeout = 0;
   e.entry_timeout = 0;
 
-  res = linkat_empty_nofollow(inode, scalar_fd(req, parent), name); // Create the hardlink
+  res = linkat_empty_nofollow(inode, inode_fd(req, parent), name); // Create the hardlink
   if (res == -1)
     goto out_err;
 
@@ -433,8 +433,8 @@ static void scalar_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t parent, const
 }
 
 // Remove a directory
-static void scalar_rmdir(fuse_req_t req, fuse_ino_t parent, const char *name) {
-  int res = unlinkat(scalar_fd(req, parent), name, AT_REMOVEDIR);
+static void op_rmdir(fuse_req_t req, fuse_ino_t parent, const char *name) {
+  int res = unlinkat(inode_fd(req, parent), name, AT_REMOVEDIR);
   if(res != -1) {
     // Log if successful
     // There is no point in logging the inode on directory removal so we purposefully avoid doing so
@@ -446,7 +446,7 @@ static void scalar_rmdir(fuse_req_t req, fuse_ino_t parent, const char *name) {
 }
 
 // Rename a file
-static void scalar_rename(fuse_req_t req, fuse_ino_t parent, const char *name, fuse_ino_t newparent, const char *newname, unsigned int flags) {
+static void op_rename(fuse_req_t req, fuse_ino_t parent, const char *name, fuse_ino_t newparent, const char *newname, unsigned int flags) {
   if (flags) {
     fuse_reply_err(req, EINVAL);
     return;
@@ -454,13 +454,13 @@ static void scalar_rename(fuse_req_t req, fuse_ino_t parent, const char *name, f
 
   // Lookup file to get inode for logging
   struct fuse_entry_param e;
-  int err = scalar_do_lookup(req, parent, name, &e);
+  int err = do_lookup(req, parent, name, &e);
   if (err)
     fuse_reply_err(req, err);
-  scalar_forget_one(req, e.ino, 1);
+  forget_one(req, e.ino, 1);
 
   // Rename
-  int res = renameat(scalar_fd(req, parent), name, scalar_fd(req, newparent), newname);
+  int res = renameat(inode_fd(req, parent), name, inode_fd(req, newparent), newname);
   if(res != -1) {
     // Log only if success
     ino_t parent_sys_ino = inode_data(req, parent)->ino;
@@ -473,15 +473,15 @@ static void scalar_rename(fuse_req_t req, fuse_ino_t parent, const char *name, f
 }
 
 // Remove a file
-static void scalar_unlink(fuse_req_t req, fuse_ino_t parent, const char *name) { 
-  int parent_fd = scalar_fd(req, parent);
+static void op_unlink(fuse_req_t req, fuse_ino_t parent, const char *name) { 
+  int parent_fd = inode_fd(req, parent);
 
   // Get contents
   struct fuse_entry_param e;
-  int res = scalar_do_lookup(req, parent, name, &e);
+  int res = do_lookup(req, parent, name, &e);
   if (res)
     goto out_err;
-  scalar_forget_one(req, e.ino, 1);
+  forget_one(req, e.ino, 1);
 
   // Get file contents
   ssize_t file_size = e.attr.st_size;
@@ -517,23 +517,23 @@ static void scalar_unlink(fuse_req_t req, fuse_ino_t parent, const char *name) {
 // This function is called when the kernel removes an inode from its internal caches
 // The inode's lookup count increases by one for every call to fuse_reply_entry and fuse_reply_create 
 // The nlookup parameter indicates by how much the lookup count should be decreased.
-static void scalar_forget(fuse_req_t req, fuse_ino_t ino, uint64_t nlookup) {
-  scalar_forget_one(req, ino, nlookup);
+static void op_forget(fuse_req_t req, fuse_ino_t ino, uint64_t nlookup) {
+  forget_one(req, ino, nlookup);
   fuse_reply_none(req);
 }
 
 // Forget about multiple inodes
 // See description of the forget function for more information
-static void scalar_forget_multi(fuse_req_t req, size_t count, struct fuse_forget_data *forgets) {
+static void op_forget_multi(fuse_req_t req, size_t count, struct fuse_forget_data *forgets) {
   for (int i = 0; i < count; i++)
-    scalar_forget_one(req, forgets[i].ino, forgets[i].nlookup);
+    forget_one(req, forgets[i].ino, forgets[i].nlookup);
   fuse_reply_none(req);
 }
 
 // Read symbolic link
-static void scalar_readlink(fuse_req_t req, fuse_ino_t ino) {
+static void op_readlink(fuse_req_t req, fuse_ino_t ino) {
   char buf[PATH_MAX + 1];
-  int res = readlinkat(scalar_fd(req, ino), "", buf, sizeof(buf));
+  int res = readlinkat(inode_fd(req, ino), "", buf, sizeof(buf));
   if (res == -1)
     return (void) fuse_reply_err(req, errno);
   if (res == sizeof(buf))
@@ -543,12 +543,12 @@ static void scalar_readlink(fuse_req_t req, fuse_ino_t ino) {
 }
 
 // Open a directory
-static void scalar_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
+static void op_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
   int error = ENOMEM;
   struct dir_data *d = calloc(1, sizeof(struct dir_data));
   if (d == NULL)
     goto out_err;
-  d->fd = openat(scalar_fd(req, ino), ".", O_RDONLY);
+  d->fd = openat(inode_fd(req, ino), ".", O_RDONLY);
   if (d->fd == -1)
     goto out_errno;
   d->dp = fdopendir(d->fd);
@@ -575,7 +575,7 @@ static int is_dot_or_dotdot(const char *name) {
 }
 
 // Helper function for readdir
-static void scalar_do_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t offset, struct fuse_file_info *fi, int plus) {
+static void do_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t offset, struct fuse_file_info *fi, int plus) {
   struct dir_data *d = dir_data(fi);
   char *buf;
   char *p;
@@ -621,7 +621,7 @@ static void scalar_do_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t
            .attr.st_mode = d->entry->d_type << 12,
           };
       } else {
-        err = scalar_do_lookup(req, ino, name, &e);
+        err = do_lookup(req, ino, name, &e);
         if (err)
           goto error;
         entry_ino = e.ino;
@@ -637,7 +637,7 @@ static void scalar_do_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t
     }
     if (entsize > rem) {
       if (entry_ino != 0) 
-        scalar_forget_one(req, entry_ino, 1);
+        forget_one(req, entry_ino, 1);
       break;
     }
     
@@ -660,19 +660,19 @@ static void scalar_do_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t
 }
 
 // Read directory
-static void scalar_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t offset, struct fuse_file_info *fi) {
-  scalar_do_readdir(req, ino, size, offset, fi, 0);
+static void op_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t offset, struct fuse_file_info *fi) {
+  do_readdir(req, ino, size, offset, fi, 0);
 }
 
 // Read directory with attributes
 // In contrast to readdir() (which does not affect the lookup counts), the lookup count of every entry returned by readdirplus(), except "." and "..", is incremented by one
-static void scalar_readdirplus(fuse_req_t req, fuse_ino_t ino, size_t size, off_t offset, struct fuse_file_info *fi) {
-  scalar_do_readdir(req, ino, size, offset, fi, 1);
+static void op_readdirplus(fuse_req_t req, fuse_ino_t ino, size_t size, off_t offset, struct fuse_file_info *fi) {
+  do_readdir(req, ino, size, offset, fi, 1);
 }
 
 // Release an open directory
 // For every opendir call there will be exactly one releasedir call (unless the filesystem is force-unmounted).
-static void scalar_releasedir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
+static void op_releasedir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
   struct dir_data *d = dir_data(fi);
   (void) ino;
   closedir(d->dp);
@@ -682,21 +682,21 @@ static void scalar_releasedir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_i
 
 // Create and open a file
 // If the file does not exist, first create it with the specified mode, and then open it.
-static void scalar_create(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode, struct fuse_file_info *fi) {
+static void op_create(fuse_req_t req, fuse_ino_t parent, const char *name, mode_t mode, struct fuse_file_info *fi) {
   int fd;
   struct fuse_entry_param e;
   int err;
 
   // Test for file existence (to log only creates)
-  int not_exists = faccessat(scalar_fd(req, parent), name, F_OK, AT_EACCESS | AT_SYMLINK_NOFOLLOW);
+  int not_exists = faccessat(inode_fd(req, parent), name, F_OK, AT_EACCESS | AT_SYMLINK_NOFOLLOW);
 
   // Open/create file
-  fd = openat(scalar_fd(req, parent), name, (fi->flags | O_CREAT) & ~O_NOFOLLOW, mode);
+  fd = openat(inode_fd(req, parent), name, (fi->flags | O_CREAT) & ~O_NOFOLLOW, mode);
   if (fd == -1)
     return (void) fuse_reply_err(req, errno);
   fi->fh = fd;
   fi->direct_io = 1;
-  err = scalar_do_lookup(req, parent, name, &e);
+  err = do_lookup(req, parent, name, &e);
 
   if (err)
     fuse_reply_err(req, err);
@@ -714,7 +714,7 @@ static void scalar_create(fuse_req_t req, fuse_ino_t parent, const char *name, m
 
 // Synchronize directory contents
 // If the datasync parameter is non-zero, then only the directory contents should be flushed, not the meta data.
-static void scalar_fsyncdir(fuse_req_t req, fuse_ino_t ino, int datasync, struct fuse_file_info *fi) {
+static void op_fsyncdir(fuse_req_t req, fuse_ino_t ino, int datasync, struct fuse_file_info *fi) {
   int res;
   int fd = dirfd(dir_data(fi)->dp);
   (void) ino;
@@ -727,11 +727,11 @@ static void scalar_fsyncdir(fuse_req_t req, fuse_ino_t ino, int datasync, struct
 
 // Open a file
 // Open flags are available in fi->flags
-static void scalar_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
+static void op_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
   int fd;
   char buf[64];
 
-  sprintf(buf, "/proc/self/fd/%i", scalar_fd(req, ino));
+  sprintf(buf, "/proc/self/fd/%i", inode_fd(req, ino));
   fd = open(buf, fi->flags & ~O_NOFOLLOW);
   if (fd == -1)
     return (void) fuse_reply_err(req, errno);
@@ -743,7 +743,7 @@ static void scalar_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *f
 // Release an open file
 // Release is called when there are no more references to an open file: all file descriptors are closed and all memory mappings are unmapped
 // For every open call there will be exactly one release call (unless the filesystem is force-unmounted)
-static void scalar_release(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
+static void op_release(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
   (void) ino;
   close(fi->fh);
   fuse_reply_err(req, 0);
@@ -752,14 +752,14 @@ static void scalar_release(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info
 // Flush method
 // This is called on each close() of the opened file
 // Since file descriptors can be duplicated (dup, dup2, fork), for one open call there may be many flush calls
-static void scalar_flush(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
+static void op_flush(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi) {
   (void) ino;
   int res = close(dup(fi->fh));
   fuse_reply_err(req, res == -1 ? errno : 0);
 }
 
 // Synchronize file contents
-static void scalar_fsync(fuse_req_t req, fuse_ino_t ino, int datasync, struct fuse_file_info *fi) {
+static void op_fsync(fuse_req_t req, fuse_ino_t ino, int datasync, struct fuse_file_info *fi) {
   int res;
   (void) ino;
   if (datasync)
@@ -771,7 +771,7 @@ static void scalar_fsync(fuse_req_t req, fuse_ino_t ino, int datasync, struct fu
 
 // Read data
 // Read should send exactly the number of bytes requested except on EOF or error, otherwise the rest of the data will be substituted with zeroes
-static void scalar_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t offset, struct fuse_file_info *fi) {
+static void op_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t offset, struct fuse_file_info *fi) {
   struct fuse_bufvec buf = FUSE_BUFVEC_INIT(size);
   buf.buf[0].flags = FUSE_BUF_IS_FD | FUSE_BUF_FD_SEEK;
   buf.buf[0].fd = fi->fh;
@@ -781,7 +781,7 @@ static void scalar_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t offse
 
 // Write data made available in a buffer
 // This is a more generic version of the write method
-static void scalar_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec *in_buf, off_t off, struct fuse_file_info *fi) {
+static void op_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec *in_buf, off_t off, struct fuse_file_info *fi) {
   (void) ino;
   ssize_t res;
   struct fuse_bufvec out_buf = FUSE_BUFVEC_INIT(fuse_buf_size(in_buf));
@@ -801,9 +801,9 @@ static void scalar_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec 
 }
 
 // Get file system statistics
-static void scalar_statfs(fuse_req_t req, fuse_ino_t ino) {
+static void op_statfs(fuse_req_t req, fuse_ino_t ino) {
   struct statvfs stbuf;
-  int res = fstatvfs(scalar_fd(req, ino), &stbuf);
+  int res = fstatvfs(inode_fd(req, ino), &stbuf);
   if (res == -1)
     fuse_reply_err(req, errno);
   else
@@ -812,7 +812,7 @@ static void scalar_statfs(fuse_req_t req, fuse_ino_t ino) {
 
 // Allocate requested space
 // If this function returns success then subsequent writes to the specified range shall not fail due to the lack of free space on the file system storage media
-static void scalar_fallocate(fuse_req_t req, fuse_ino_t ino, int mode, off_t offset, off_t length, struct fuse_file_info *fi) {
+static void op_fallocate(fuse_req_t req, fuse_ino_t ino, int mode, off_t offset, off_t length, struct fuse_file_info *fi) {
   int err;
   if (mode) {
     fuse_reply_err(req, EOPNOTSUPP);
@@ -836,7 +836,7 @@ static void scalar_fallocate(fuse_req_t req, fuse_ino_t ino, int mode, off_t off
 }
 
 // Acquire, modify or release a BSD file lock
-static void scalar_flock(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi, int op) {
+static void op_flock(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi, int op) {
   int res;
   (void) ino;
   res = flock(fi->fh, op);
@@ -844,7 +844,7 @@ static void scalar_flock(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *
 }
 
 // Get an extended attribute by name
-static void scalar_getxattr(fuse_req_t req, fuse_ino_t ino, const char *name, size_t size) {
+static void op_getxattr(fuse_req_t req, fuse_ino_t ino, const char *name, size_t size) {
   char *value = NULL;
   char procname[64];
   struct inode_data *inode = inode_data(req, ino);
@@ -884,7 +884,7 @@ static void scalar_getxattr(fuse_req_t req, fuse_ino_t ino, const char *name, si
 }
 
 // List extended attribute names
-static void scalar_listxattr(fuse_req_t req, fuse_ino_t ino, size_t size) {
+static void op_listxattr(fuse_req_t req, fuse_ino_t ino, size_t size) {
   char *value = NULL;
   char procname[64];
   struct inode_data *inode = inode_data(req, ino);
@@ -924,7 +924,7 @@ static void scalar_listxattr(fuse_req_t req, fuse_ino_t ino, size_t size) {
 }
 
 // Set an extended attribute
-static void scalar_setxattr(fuse_req_t req, fuse_ino_t ino, const char *name, const char *value, size_t size, int flags) {
+static void op_setxattr(fuse_req_t req, fuse_ino_t ino, const char *name, const char *value, size_t size, int flags) {
   char procname[64];
   struct inode_data *inode = inode_data(req, ino);
   ssize_t ret;
@@ -973,7 +973,7 @@ static void scalar_setxattr(fuse_req_t req, fuse_ino_t ino, const char *name, co
 }
 
 // Remove an extended attribute
-static void scalar_removexattr(fuse_req_t req, fuse_ino_t ino, const char *name) {
+static void op_removexattr(fuse_req_t req, fuse_ino_t ino, const char *name) {
   char procname[64];
   struct inode_data *inode = inode_data(req, ino);
   ssize_t ret;
@@ -1018,44 +1018,44 @@ static void scalar_removexattr(fuse_req_t req, fuse_ino_t ino, const char *name)
 
 const struct fuse_lowlevel_ops fs_ops =
   {
-   .init           = scalar_init,
+   .init           = op_init,
    .destroy        = NULL,
-   .lookup         = scalar_lookup,
-   .mkdir          = scalar_mkdir,
-   .mknod          = scalar_mknod,
-   .symlink        = scalar_symlink,
-   .link           = scalar_link,
-   .unlink         = scalar_unlink,
-   .rmdir          = scalar_rmdir,
-   .rename         = scalar_rename,
-   .forget         = scalar_forget,
-   .forget_multi   = scalar_forget_multi,
-   .getattr        = scalar_getattr,
-   .setattr        = scalar_setattr,
-   .readlink       = scalar_readlink,
-   .opendir        = scalar_opendir,
-   .readdir        = scalar_readdir,
-   .readdirplus    = scalar_readdirplus,
-   .releasedir     = scalar_releasedir,
-   .fsyncdir       = scalar_fsyncdir,
-   .create         = scalar_create,
-   .open           = scalar_open,
-   .release        = scalar_release,
-   .flush          = scalar_flush,
-   .fsync          = scalar_fsync,
-   .read           = scalar_read,
-   .write_buf      = scalar_write_buf,
-   .statfs         = scalar_statfs,
-   .fallocate      = scalar_fallocate,
-   .flock          = scalar_flock,
-   .getxattr       = scalar_getxattr,
-   .listxattr      = scalar_listxattr,
-   .setxattr       = scalar_setxattr,
-   .removexattr    = scalar_removexattr,
+   .lookup         = op_lookup,
+   .mkdir          = op_mkdir,
+   .mknod          = op_mknod,
+   .symlink        = op_symlink,
+   .link           = op_link,
+   .unlink         = op_unlink,
+   .rmdir          = op_rmdir,
+   .rename         = op_rename,
+   .forget         = op_forget,
+   .forget_multi   = op_forget_multi,
+   .getattr        = op_getattr,
+   .setattr        = op_setattr,
+   .readlink       = op_readlink,
+   .opendir        = op_opendir,
+   .readdir        = op_readdir,
+   .readdirplus    = op_readdirplus,
+   .releasedir     = op_releasedir,
+   .fsyncdir       = op_fsyncdir,
+   .create         = op_create,
+   .open           = op_open,
+   .release        = op_release,
+   .flush          = op_flush,
+   .fsync          = op_fsync,
+   .read           = op_read,
+   .write_buf      = op_write_buf,
+   .statfs         = op_statfs,
+   .fallocate      = op_fallocate,
+   .flock          = op_flock,
+   .getxattr       = op_getxattr,
+   .listxattr      = op_listxattr,
+   .setxattr       = op_setxattr,
+   .removexattr    = op_removexattr,
   };
 const struct fuse_lowlevel_ops *fs_ops_p = &fs_ops;
 
 void fs_ops_init() {
-  if ((scalar_root.fd = open("/", O_PATH)) < 0)
+  if ((root_inode.fd = open("/", O_PATH)) < 0)
     err(EXIT_FAILURE, "open(/)");
 }
